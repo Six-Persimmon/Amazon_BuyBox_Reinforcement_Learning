@@ -41,6 +41,8 @@ class LogitDemandPricingEnv(gym.Env):
                  ):
         super().__init__()
         self.prices = np.linspace(price_min, price_max, grid_size)
+        self.price_min = price_min
+        self.price_max = price_max
         self.cost = marginal_cost
         self.beta = beta
         self.a_0 = a_0
@@ -106,6 +108,8 @@ class LogitDemandPricingAmazonEnv(gym.Env):
 
 
 if __name__ == "__main__":
+    from scipy.optimize import fsolve
+    from scipy.optimize import minimize_scalar
     env = LogitDemandPricingEnv()
     obs, info = env.reset()
     print("Initial observation:", obs)
@@ -115,4 +119,33 @@ if __name__ == "__main__":
         print("Action:", action, "Observation:", obs, "Reward:", reward)
         if done or truncated:
             break
+    
+
+    # Monopoly Price
+    func_mono_profit = lambda p: (p - env.cost) * (np.exp((env.a_12 - p) / env.mu) / (np.exp((env.a_12 - p) / env.mu) + np.exp((env.a_0) / env.mu)))
+    p_mono = minimize_scalar(lambda p: -func_mono_profit(p), bounds=(env.price_min, env.price_max), method='bounded').x
+    p_mono = np.round(p_mono, 2)
+    print("Monopoly price:", p_mono)
+
+
+    if p_mono is not None:
+        print("Calculated monopoly price:", p_mono)
+    else:
+        print("Monopoly price calculation failed.")
+
+    # Nash Equilibrium Price
+    def func_nash_equilibrium(p_i, p_j):
+        d_i = np.exp((env.a_12 - p_i) / env.mu) / (np.exp((env.a_12 - p_i) / env.mu) + np.exp((env.a_12 - p_j) / env.mu) + np.exp((env.a_0) / env.mu))
+        d_j = np.exp((env.a_12 - p_j) / env.mu) / (np.exp((env.a_12 - p_i) / env.mu) + np.exp((env.a_12 - p_j) / env.mu) + np.exp((env.a_0) / env.mu))
+        return (p_i - env.cost) * d_i, (p_j - env.cost) * d_j
+    def equations(p):
+        p_i, p_j = p
+        return func_nash_equilibrium(p_i, p_j)
+    p_nash = fsolve(equations, (env.price_min, env.price_min))[0]
+    print("Nash equilibrium prices:", p_nash)
+    if p_nash is not None:
+        print("Calculated Nash equilibrium prices:", p_nash)
+    else:
+        print("Nash equilibrium price calculation failed.")
+
     env.close()
