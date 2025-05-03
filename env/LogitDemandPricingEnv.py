@@ -94,15 +94,6 @@ class LogitDemandPricingEnv(gym.Env):
         self.state = (a_i, a_j)
         return (a_i, a_j), {}
 
-class LogitDemandPricingAmazonEnv(gym.Env):
-    """
-    Two‑firm discrete Bertrand pricing game with Logit demand and the Amazon Featured Offer (or Buy Box) mechanism.
-    - Prices on a grid from price_min to price_max (inclusive).
-    - Demand: Logit demand with outside option. The Buy Box winner gets an additional term in the utility to give it a higher probability of being purchased.
-    - Profit = (price – cost) * demand.
-    State is a tuple of last prices played by each firm.
-    """
-    metadata = {"render_modes": []}
 
 
 

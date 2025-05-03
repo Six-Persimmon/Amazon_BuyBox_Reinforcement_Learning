@@ -1,7 +1,7 @@
-from rf_interface import load_model, predict
+from rf_interface import load_pipeline, predict
 
 # Load Pipeline
-model = load_model()
+model = load_pipeline()
 
 # Features
 new_features = [
@@ -17,8 +17,20 @@ new_features = [
     "price_diff",
 ]
 
+test_features = [
+    0,  # isAmazon
+    1,  # isFBA
+    0.5,  # avg_price_rank_60d
+    0.6,  # avg_price_rank_14d
+    0.7,  # avg_price_rank_30d
+    2.5,  # avg_self_price_30d
+    3.0,  # avg_self_price_14d
+    2.0,  # price_rank
+    2.0,  # avg_self_price_60d
+    -1.5,  # price_diff
+]
 # Call predict()
-label, probability = predict(model, new_features)
+label, probability = predict(model, test_features)
 
 # Outputs
 print("Predicted class (0/1):", label)

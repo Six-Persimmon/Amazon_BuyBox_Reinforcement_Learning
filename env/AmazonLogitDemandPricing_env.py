@@ -63,27 +63,36 @@ class AmazonLogitDemandPricingEnv(gym.Env):
             spaces.Discrete(grid_size)
         ))
 
-    def step(self, actions):
+    def step(self, actions, buy_box):
         '''
-        Logit demand system with outside option'''
+        Logit demand system with outside option.
+        The Buy Box winner receives additional utility to capture ~80% of inside-good demand.
+        '''
         a_i, a_j = actions
+        bb1, bb2 = buy_box  # 1 means winner, 0 means loser
         p_i = self.prices[a_i]
         p_j = self.prices[a_j]
-        # print("a_i:", a_i, "a_j:", a_j)
-        # print("p_i:", p_i, "p_j:", p_j)
 
-        deno = np.exp((self.a_12 - p_i) / self.mu) + np.exp((self.a_12 - p_j) / self.mu) + np.exp((self.a_0) / self.mu)
+        # Buy Box utility boost to shift ~80% of inside-good demand to winner
+        bb_utility = 1.5  # Tunable parameter to achieve ~80% share, depending on mu
 
-        d_i = np.exp((self.a_12 - p_i) / self.mu) / deno
-        d_j = np.exp((self.a_12 - p_j) / self.mu) / deno
-        # print("d_i:", d_i, "d_j:", d_j)
+        # Utilities
+        u_i = (self.a_12 - p_i) / self.mu + bb1 * bb_utility
+        u_j = (self.a_12 - p_j) / self.mu + bb2 * bb_utility
+        u_0 = self.a_0 / self.mu  # outside option utility
 
+        # Softmax denominator
+        deno = np.exp(u_i) + np.exp(u_j) + np.exp(u_0)
 
-        # profits
+        # Choice probabilities
+        d_i = np.exp(u_i) / deno
+        d_j = np.exp(u_j) / deno
+
+        # Profits  
         r_i = (p_i - self.cost) * d_i
         r_j = (p_j - self.cost) * d_j
-        # print("r_i:", r_i, "r_j:", r_j)
-        # update state
+
+        # Update state
         self.state = (a_i, a_j)
 
         return (a_i, a_j), (r_i, r_j), False, False, {}
