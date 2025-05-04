@@ -20,14 +20,14 @@ new_features = [
 test_features = [
     0,  # isAmazon
     1,  # isFBA
-    0.5,  # avg_price_rank_60d
+    0.5,  # avg_price_rank_60d: Mean of this seller’s price_rank over the past 60 days
     0.6,  # avg_price_rank_14d
     0.7,  # avg_price_rank_30d
-    2.5,  # avg_self_price_30d
+    2.5,  # avg_self_price_30d: Mean of this seller’s price over the past 30 days.
     3.0,  # avg_self_price_14d
-    2.0,  # price_rank
+    2.0,  # price_rank: Rank of this seller’s price at time t. Higer rank means lower price.
     2.0,  # avg_self_price_60d
-    -1.5,  # price_diff
+    -1.5,  # price_diff: Difference between this seller’s price and the minimum price at time.
 ]
 # Call predict()
 label, probability = predict(model, test_features)
