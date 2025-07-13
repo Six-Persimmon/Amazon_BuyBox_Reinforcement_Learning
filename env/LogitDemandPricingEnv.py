@@ -32,7 +32,7 @@ class LogitDemandPricingEnv(gym.Env):
     def __init__(self,
                  price_min: float = 0.01,
                  price_max: float = 10.0,
-                 grid_size: int = 100,
+                 grid_size: int = 25,
                  marginal_cost: float = 2.0,
                  beta: float = 0.95,
                  a_0=0, # parameter for logit demand. OUtside option
