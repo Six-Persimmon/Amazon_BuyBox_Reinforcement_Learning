@@ -70,8 +70,8 @@ def simulate_n_player_competition(env, n_players, periods, alpha=0.1, gamma=0.9,
             state_idx = reduced_state_to_index(own_price_idx, min_comp_price_idx, n_price_actions)
             state_indices.append(state_idx)
             
-            # Agent takes action based on reduced state
-            action = agent.take_action(own_price_idx, min_comp_price_idx)
+            # Agent takes action based on reduced state (now needs all prices for Rule 4)
+            action = agent.take_action(own_price_idx, min_comp_price_idx, obs)
             actions.append(action)
         
         actions = tuple(actions)
@@ -184,48 +184,21 @@ if __name__ == "__main__":
     for i in range(n_players):
         final_price = batch_prices[-1, i, -1]
         print(f"Player {i}: {final_price:.3f}")
-    
-    print(f"\nMean prices over last 100 periods:")
+
+    print(f"\nN=5 Mean prices over last 100 periods:")
     for i in range(n_players):
         mean_price = np.mean(batch_prices[:, i, -100:])
         std_price = np.std(batch_prices[:, i, -100:])
         print(f"Player {i}: {mean_price:.3f} ± {std_price:.3f}")
     
-
-
-    #======
-    n_players = 10
-    print(f"Running {runs} simulations with {n_players} players for {periods} periods each...")
-    
-    # Run batch simulation
-    batch_prices, batch_actions, batch_profits = simulate_batch_n_player(
-        n_players, periods, runs, alpha, gamma, env_params
+    # Test N=2 case for comparison
+    print(f"\n\nTesting N=2 case for comparison with original:")
+    batch_prices_2, batch_actions_2, batch_profits_2 = simulate_batch_n_player(
+        2, periods, runs, alpha, gamma, env_params
     )
     
-    print(f"Batch simulation completed!")
-    print(f"Batch prices shape: {batch_prices.shape}")
-    print(f"Batch actions shape: {batch_actions.shape}")
-    print(f"Batch profits shape: {batch_profits.shape}")
-    
-    # Show some results
-    print(f"\nFinal prices in last run:")
-    for i in range(n_players):
-        final_price = batch_prices[-1, i, -1]
-        print(f"Player {i}: {final_price:.3f}")
-    
-    print(f"\nMean prices over last 100 periods:")
-    for i in range(n_players):
-        mean_price = np.mean(batch_prices[:, i, -100:])
-        std_price = np.std(batch_prices[:, i, -100:])
+    print(f"N=2 Mean prices over last 100 periods:")
+    for i in range(2):
+        mean_price = np.mean(batch_prices_2[:, i, -100:])
+        std_price = np.std(batch_prices_2[:, i, -100:])
         print(f"Player {i}: {mean_price:.3f} ± {std_price:.3f}")
-    # # Test N=2 case for comparison
-    # print(f"\n\nTesting N=2 case for comparison with original:")
-    # batch_prices_2, batch_actions_2, batch_profits_2 = simulate_batch_n_player(
-    #     2, periods, runs, alpha, gamma, env_params
-    # )
-    
-    # print(f"N=2 Mean prices over last 100 periods:")
-    # for i in range(2):
-    #     mean_price = np.mean(batch_prices_2[:, i, -100:])
-    #     std_price = np.std(batch_prices_2[:, i, -100:])
-    #     print(f"Player {i}: {mean_price:.3f} ± {std_price:.3f}")

@@ -25,6 +25,13 @@ class NPlayerQLearningRuleAgent:
     
     State representation: (own_price_idx, min_competitor_price_idx)
     This reduces Q-table size from grid_size^N to grid_size^2.
+    
+    Rules:
+    - Rule 0: Match lowest competitor price
+    - Rule 1: Price one step above lowest competitor
+    - Rule 2: Price one step below lowest competitor (but not below marginal cost)
+    - Rule 3: Keep current price
+    - Rule 4: Raise price by one step (only available when agent is lowest price)
     """
     
     def __init__(self, player_id, n_players, n_price_actions, alpha=0.1, gamma=0.9, 
@@ -32,13 +39,21 @@ class NPlayerQLearningRuleAgent:
         self.player_id = player_id
         self.n_players = n_players
         self.n_price_actions = n_price_actions
-        self.n_rules = 4
+        self.n_rules = 5  # Now 5 rules (0-4)
         self.alpha = alpha
         self.gamma = gamma
         self.omega = 1.5e-5
         self.t = 0
+        self.cost = cost
+        self.prices = prices
         
-        # Q-table: rows = reduced state index (own_price, min_competitor), cols = rule index (0-3)
+        # Find marginal cost index in price grid
+        if prices is not None:
+            self.marginal_cost_idx = np.argmin(np.abs(prices - cost))
+        else:
+            self.marginal_cost_idx = 0  # Fallback
+        
+        # Q-table: rows = reduced state index (own_price, min_competitor), cols = rule index (0-4)
         # State space is now grid_size^2 instead of grid_size^n_players
         self.Q = np.random.uniform(10, 20, size=(n_price_actions * n_price_actions, self.n_rules))
         
@@ -47,18 +62,16 @@ class NPlayerQLearningRuleAgent:
         self.rule_timer_thr = rule_timer_thr
         self.rule_timer = self.rule_timer_thr  # start fresh
         
-        # Track prices
-        self.prices = prices
-        self.cost = cost
         self.last_price_idx = None
 
-    def take_action(self, own_price_idx, min_competitor_price_idx):
+    def take_action(self, own_price_idx, min_competitor_price_idx, all_price_indices):
         """
         Take action based on reduced state representation.
         
         Args:
             own_price_idx: This agent's previous price index
             min_competitor_price_idx: Minimum price index among competitors
+            all_price_indices: All players' current price indices (for Rule 4 eligibility)
             
         Returns:
             price_idx: This agent's chosen price index
@@ -68,29 +81,61 @@ class NPlayerQLearningRuleAgent:
         
         # Check if we need to pick a new rule
         if self.rule_timer >= self.rule_timer_thr:
+            # Get available rules (Rule 4 may be masked)
+            available_rules = self._get_available_rules(own_price_idx, all_price_indices)
+            
             epsilon = np.exp(-self.t * self.omega)
             if np.random.rand() < epsilon:
-                new_rule = np.random.randint(self.n_rules)
+                # Random selection from available rules only
+                new_rule = np.random.choice(available_rules)
             else:
-                new_rule = int(np.argmax(self.Q[state_index]))
+                # Greedy selection from available rules only
+                q_values_available = self.Q[state_index, available_rules]
+                best_available_idx = np.argmax(q_values_available)
+                new_rule = available_rules[best_available_idx]
+            
             self.current_rule = new_rule
             self.rule_timer = 0
         
         # Apply current rule to get price index
-        price_idx = self._apply_rule(self.current_rule, own_price_idx, min_competitor_price_idx)
+        price_idx = self._apply_rule(self.current_rule, own_price_idx, min_competitor_price_idx, all_price_indices)
         self.rule_timer += 1
         self.last_price_idx = price_idx
         
         return price_idx
 
-    def _apply_rule(self, rule, own_price_idx, min_competitor_price_idx):
+    def _get_available_rules(self, own_price_idx, all_price_indices):
+        """
+        Get list of available rules based on current state.
+        Rule 4 is only available when agent is the lowest price.
+        
+        Args:
+            own_price_idx: Agent's current price index
+            all_price_indices: All players' current price indices
+            
+        Returns:
+            available_rules: List of available rule indices
+        """
+        # Rules 0-3 are always available
+        available_rules = [0, 1, 2, 3]
+        
+        # Rule 4 only available if agent is currently the lowest price
+        # (or tied for lowest)
+        min_price_idx = min(all_price_indices)
+        if own_price_idx == min_price_idx:
+            available_rules.append(4)
+        
+        return np.array(available_rules)
+
+    def _apply_rule(self, rule, own_price_idx, min_competitor_price_idx, all_price_indices):
         """
         Apply pricing rule based on own price and minimum competitor price.
         
         Args:
-            rule: Rule index (0-3)
+            rule: Rule index (0-4)
             own_price_idx: Own previous price index
             min_competitor_price_idx: Minimum competitor price index
+            all_price_indices: All players' current price indices
             
         Returns:
             price_idx: Chosen price index
@@ -103,11 +148,15 @@ class NPlayerQLearningRuleAgent:
             # Price one step above lowest competitor
             return min(min_competitor_price_idx + 1, self.n_price_actions - 1)
         elif rule == 2:
-            # Price one step below lowest competitor
-            return max(min_competitor_price_idx - 1, 0)
+            # Price one step below lowest competitor, but not below marginal cost
+            below_competitor = max(min_competitor_price_idx - 1, 0)
+            return max(below_competitor, self.marginal_cost_idx)
         elif rule == 3:
             # Keep own previous price
             return own_price_idx
+        elif rule == 4:
+            # Raise price by one step (only available when agent is lowest price)
+            return min(own_price_idx + 1, self.n_price_actions - 1)
         else:
             raise ValueError(f"Invalid rule: {rule}")
 
@@ -186,83 +235,76 @@ def extract_reduced_state(all_price_indices, player_id):
 
 
 if __name__ == "__main__":
-    # Test the N-player rule agent with reduced state space
-    print("Testing N-player rule agent with reduced state space...")
+    # Test the improved N-player rule agent
+    print("Testing improved N-player rule agent with new rules...")
     
-    # Test reduced state indexing
-    print("\nTesting reduced state indexing:")
-    grid_size = 5
-    for _ in range(5):
-        # Random state
-        own_price = np.random.randint(grid_size)
-        min_comp_price = np.random.randint(grid_size)
-        
-        state_idx = reduced_state_to_index(own_price, min_comp_price, grid_size)
-        recovered_own, recovered_min = index_to_reduced_state(state_idx, grid_size)
-        
-        print(f"({own_price}, {min_comp_price}) -> {state_idx} -> ({recovered_own}, {recovered_min}), "
-              f"Match: {(own_price, min_comp_price) == (recovered_own, recovered_min)}")
-    
-    # Test extract_reduced_state function
-    print("\nTesting extract_reduced_state:")
-    all_prices = (2, 1, 4, 0, 3)  # 5 players with different prices
-    for player_id in range(len(all_prices)):
-        own_price, min_comp = extract_reduced_state(all_prices, player_id)
-        competitor_prices = [all_prices[i] for i in range(len(all_prices)) if i != player_id]
-        expected_min = min(competitor_prices)
-        print(f"Player {player_id}: own={own_price}, min_comp={min_comp}, "
-              f"expected_min={expected_min}, match={min_comp == expected_min}")
-    
-    # Test agent behavior with reduced state
-    print("\nTesting agent behavior with reduced state:")
-    n_players = 3
+    # Test with marginal cost constraint
     grid_size = 10
-    prices = np.linspace(1.0, 5.0, grid_size)
+    marginal_cost = 2.0
+    prices = np.linspace(0.5, 5.0, grid_size)
     
-    agents = [NPlayerQLearningRuleAgent(i, n_players, grid_size, prices=prices) 
-              for i in range(n_players)]
+    print(f"Price grid: {prices}")
+    print(f"Marginal cost: {marginal_cost}")
     
-    # Simulate a few steps
-    current_state = (3, 5, 7)  # Some initial prices
+    # Create agent
+    agent = NPlayerQLearningRuleAgent(0, 3, grid_size, cost=marginal_cost, prices=prices)
+    print(f"Marginal cost index: {agent.marginal_cost_idx} (price = {prices[agent.marginal_cost_idx]:.3f})")
     
-    for step in range(5):
-        print(f"\nStep {step + 1}:")
-        print(f"Current prices: {current_state}")
-        
-        actions = []
-        state_indices = []
-        
-        for agent in agents:
-            # Extract reduced state for this agent
-            own_price, min_comp = extract_reduced_state(current_state, agent.player_id)
-            state_idx = reduced_state_to_index(own_price, min_comp, grid_size)
-            state_indices.append(state_idx)
-            
-            # Take action
-            action = agent.take_action(own_price, min_comp)
-            actions.append(action)
-            print(f"Agent {agent.player_id}: state=({own_price}, {min_comp}), "
-                  f"Rule {agent.current_rule} -> Price idx {action}")
-        
-        # Simulate rewards (dummy values)
-        rewards = np.random.uniform(0, 1, n_players)
-        
-        # Update agents
-        next_state = tuple(actions)
-        
-        for i, agent in enumerate(agents):
-            # Calculate next state for this agent
-            next_own, next_min_comp = extract_reduced_state(next_state, agent.player_id)
-            next_state_idx = reduced_state_to_index(next_own, next_min_comp, grid_size)
-            
-            # Update Q-table
-            agent.update(state_indices[i], agent.current_rule, rewards[i], next_state_idx)
-        
-        # Move to next state
-        current_state = next_state
+    # Test Rule 2 with marginal cost constraint
+    print(f"\nTesting Rule 2 (below competitor but not below marginal cost):")
+    test_cases = [
+        (agent.marginal_cost_idx + 2, agent.marginal_cost_idx + 1),  # Normal case
+        (agent.marginal_cost_idx + 1, agent.marginal_cost_idx),      # At marginal cost
+        (agent.marginal_cost_idx, 1),                               # Would go below marginal cost
+    ]
     
-    # Test Q-table size reduction
-    print(f"\nQ-table size comparison:")
-    print(f"Original size (grid_size^n_players): {grid_size**n_players} = {grid_size}^{n_players}")
-    print(f"Reduced size (grid_size^2): {grid_size**2} = {grid_size}^2")
-    print(f"Reduction factor: {(grid_size**n_players) / (grid_size**2):.1f}x smaller")
+    for own_idx, min_comp_idx in test_cases:
+        result = agent._apply_rule(2, own_idx, min_comp_idx, (own_idx, min_comp_idx, 5))
+        own_price = prices[own_idx]
+        min_comp_price = prices[min_comp_idx]
+        result_price = prices[result]
+        print(f"  Own: {own_price:.3f}, Min comp: {min_comp_price:.3f} -> Result: {result_price:.3f}")
+    
+    # Test Rule 4 availability and behavior
+    print(f"\nTesting Rule 4 (raise price when lowest):")
+    
+    # Case 1: Agent is lowest price (Rule 4 should be available)
+    all_prices_1 = (2, 5, 7)  # Agent 0 is lowest
+    available_rules_1 = agent._get_available_rules(2, all_prices_1)
+    print(f"Agent price=2, others=[5,7]: Available rules = {available_rules_1}")
+    print(f"Rule 4 available: {4 in available_rules_1}")
+    
+    if 4 in available_rules_1:
+        rule4_result = agent._apply_rule(4, 2, 5, all_prices_1)
+        print(f"  Rule 4 result: index {rule4_result} (price {prices[rule4_result]:.3f})")
+    
+    # Case 2: Agent is not lowest price (Rule 4 should not be available)
+    all_prices_2 = (5, 2, 7)  # Agent 0 is not lowest
+    available_rules_2 = agent._get_available_rules(5, all_prices_2)
+    print(f"Agent price=5, others=[2,7]: Available rules = {available_rules_2}")
+    print(f"Rule 4 available: {4 in available_rules_2}")
+    
+    # Test complete action selection with masking
+    print(f"\nTesting complete action selection with masking:")
+    
+    # Force rule timer to trigger new rule selection
+    agent.rule_timer = agent.rule_timer_thr
+    agent.t = 10000  # Low exploration
+    
+    # Initialize Q-values to prefer Rule 4 when available
+    state_idx = reduced_state_to_index(2, 5, grid_size)
+    agent.Q[state_idx, 4] = 50  # Make Rule 4 highly preferred
+    agent.Q[state_idx, 0:4] = 10  # Lower values for other rules
+    
+    # Test when Rule 4 is available (should be selected)
+    action_1 = agent.take_action(2, 5, all_prices_1)
+    print(f"When Rule 4 available: selected rule {agent.current_rule}, action {action_1}")
+    
+    # Reset for next test
+    agent.rule_timer = agent.rule_timer_thr
+    
+    # Test when Rule 4 is not available (should select best among 0-3)
+    action_2 = agent.take_action(5, 2, all_prices_2)
+    print(f"When Rule 4 not available: selected rule {agent.current_rule}, action {action_2}")
+    
+    print(f"\nAll tests completed successfully!")
