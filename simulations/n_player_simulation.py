@@ -103,6 +103,17 @@ def simulate_n_player_competition(env, n_players, periods, alpha=0.1, gamma=0.9,
     return history_prices, history_actions, history_profits
 
 
+def get_equilibrium_prices(n_players, env_params):
+    """Get monopoly and Nash equilibrium prices from the environment."""
+    # Create environment to calculate equilibrium prices
+    env = NPlayerLogitDemandPricingEnv(n_players=n_players, **env_params)
+    
+    monopoly_price = env.get_monopoly_price()
+    nash_price = env.get_nash_equilibrium_price()
+    
+    return monopoly_price, nash_price
+
+
 def simulate_batch_n_player(n_players, periods, runs, alpha, gamma, env_params, rule_timer_thr=4):
     """
     Run multiple N-player simulations in batch.
