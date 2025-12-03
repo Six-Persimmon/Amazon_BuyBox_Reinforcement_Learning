@@ -53,8 +53,7 @@ class SimulationConfig:
     # Tabular Q-learning hyperparameters
     learning_rate: float = 1e-2
     discount_rate: float = 0.99
-    epsilon_omega: float = 5e-4
-    state_precision: int = 1
+    epsilon_omega: float = 5e-5 # decay rate, approximately 10 / N. N = 120,000 in our baseline case.
 
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     scenario_label: Optional[str] = None
@@ -79,7 +78,12 @@ def _build_environment(n_players: int, cfg: EnvironmentConfig) -> NPlayerPoisson
     )
 
 
-def _make_agent(config: SimulationConfig, action_dim: int, state_dim: int) -> NPlayerSimpleQLearningRuleAgent:
+def _make_agent(
+    config: SimulationConfig,
+    action_dim: int,
+    state_dim: int,
+    price_grid: np.ndarray,
+) -> NPlayerSimpleQLearningRuleAgent:
     """Instantiate a tabular Q-learning repricer selector with shared defaults."""
 
     return NPlayerSimpleQLearningRuleAgent(
@@ -88,7 +92,7 @@ def _make_agent(config: SimulationConfig, action_dim: int, state_dim: int) -> NP
         learning_rate=config.learning_rate,
         discount_rate=config.discount_rate,
         epsilon_omega=config.epsilon_omega,
-        state_precision=config.state_precision,
+        price_grid=price_grid,
         allowed_action_ids=config.allowed_action_ids,
     )
 
@@ -179,14 +183,16 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
     env = _build_environment(config.n_players, config.environment)
     library = MetaActionLibrary()
     action_dim = len(library.list_actions())
-    # state_dim = 2  # [avg lowest vs cost bin, own avg vs lowest bin]
-    state_dim = 3  # [own avg price, avg lowest price, last lowest price]
+    # state_dim = 3  # [own avg price, avg lowest price, last lowest price]
+    # state_dim = 1  # [last lowest price]
+    state_dim = 2  # [last lowest price, is_lowest flag]
+    price_grid = env.prices
 
     if config.share_parameters:
-        shared_agent = _make_agent(config, action_dim, state_dim)
+        shared_agent = _make_agent(config, action_dim, state_dim, price_grid)
         agents = [shared_agent] * config.n_players
     else:
-        agents = [_make_agent(config, action_dim, state_dim) for _ in range(config.n_players)]
+        agents = [_make_agent(config, action_dim, state_dim, price_grid) for _ in range(config.n_players)]
 
     if config.marginal_costs is not None:
         marginal_costs = np.asarray(config.marginal_costs, dtype=float)
@@ -195,14 +201,8 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
     else:
         marginal_costs = np.zeros(config.n_players, dtype=float)
 
-    bin_edges = np.asarray(
-        [-np.inf, -1.5, -1.25, -1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.75, 1.0, 1.25, 1.5, np.inf],
-        dtype=float,
-    )
-
-    prev_avg_prices = [env.price_min] * config.n_players
-    prev_avg_lowest_price = env.price_min
     prev_last_lowest_price = env.price_min
+    prev_last_prices = [env.price_min] * config.n_players
     prev_price_indices: Optional[List[int]] = None
 
     summaries: List[Dict[str, float]] = []
@@ -213,22 +213,29 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
         chosen_actions: List[MetaAction] = []
         chosen_ids: List[int] = []
 
+        rounded_prev_last_lowest = env.snap_price_to_grid(prev_last_lowest_price)
+
         for player_id in range(config.n_players):
-            # mc = marginal_costs[player_id]
-            # lowest_gap = prev_avg_lowest_price - mc
-            # own_gap = prev_avg_prices[player_id] - prev_avg_lowest_price
+            # Previous 3-feature state:
             # state = np.asarray(
             #     [
-            #         _bin_gap(lowest_gap, bin_edges),
-            #         _bin_gap(own_gap, bin_edges),
+            #         prev_avg_prices[player_id],
+            #         prev_avg_lowest_price,
+            #         prev_last_lowest_price,
+            #     ],
+            #     dtype=np.float32,
+            # )
+            # Previous 1-feature state:
+            # state = np.asarray(
+            #     [
+            #         rounded_prev_last_lowest,
             #     ],
             #     dtype=np.float32,
             # )
             state = np.asarray(
                 [
-                    prev_avg_prices[player_id],
-                    prev_avg_lowest_price,
-                    prev_last_lowest_price,
+                    rounded_prev_last_lowest,
+                    1.0 if np.isclose(prev_last_prices[player_id], prev_last_lowest_price) else 0.0,
                 ],
                 dtype=np.float32,
             )
@@ -245,31 +252,38 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
             initial_price_indices=prev_price_indices if config.carry_over_prices else None,
         )
 
-        rewards = np.asarray(result["average_profits"], dtype=float)
-        avg_prices = np.asarray(result["average_prices"], dtype=float)
-        avg_lowest = float(result["average_lowest_price"])
-        price_history = np.asarray(result["price_history"], dtype=float)
-        repricer_share = float(np.mean(result["repricer_usage"]))
+        rewards = np.asarray(result["average_profits"], dtype=float) # shape (n_players,)
+        avg_prices = np.asarray(result["average_prices"], dtype=float) # shape (n_players,)
+        avg_lowest = float(result["average_lowest_price"]) # scalar
+        price_history = np.asarray(result["price_history"], dtype=float) # shape (periods, n_players)
+        repricer_share = float(np.mean(result["repricer_usage"])) # scalar
         metrics = _compute_network_metrics(price_history, chosen_actions)
         done_flag = episode == (config.outer_episodes - 1)
         last_lowest = float(np.min(price_history[-1])) if price_history.size else avg_lowest
+        rounded_last_lowest = env.snap_price_to_grid(last_lowest)
+        last_prices = price_history[-1] if price_history.size else np.full(config.n_players, env.price_min, dtype=float)
 
         for player_id in range(config.n_players):
-            # mc = marginal_costs[player_id]
-            # next_lowest_gap = avg_lowest - mc
-            # next_own_gap = avg_prices[player_id] - avg_lowest
+            # Previous 3-feature next_state:
             # next_state = np.asarray(
             #     [
-            #         _bin_gap(next_lowest_gap, bin_edges),
-            #         _bin_gap(next_own_gap, bin_edges),
+            #         avg_prices[player_id],
+            #         avg_lowest,
+            #         last_lowest,
+            #     ],
+            #     dtype=np.float32,
+            # )
+            # Previous 1-feature next_state:
+            # next_state = np.asarray(
+            #     [
+            #         rounded_last_lowest,
             #     ],
             #     dtype=np.float32,
             # )
             next_state = np.asarray(
                 [
-                    avg_prices[player_id],
-                    avg_lowest,
-                    last_lowest,
+                    rounded_last_lowest,
+                    1.0 if np.isclose(last_prices[player_id], last_lowest) else 0.0,
                 ],
                 dtype=np.float32,
             )
@@ -282,9 +296,8 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
             )
             td_trace.append(float(abs(td_error)))
 
-        prev_avg_prices = avg_prices.tolist()
-        prev_avg_lowest_price = avg_lowest
-        prev_last_lowest_price = last_lowest
+        prev_last_lowest_price = rounded_last_lowest
+        prev_last_prices = last_prices.tolist()
         if config.carry_over_prices:
             final_indices = result.get("final_prices_idx")
             if final_indices is not None:

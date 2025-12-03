@@ -326,10 +326,10 @@ if __name__ == "__main__":
         default_lambda=1.0,
         default_marginal_costs=[2.0, 2.0, 2.0, 2.0, 2.0],
         seeds=(0, 1, 2, 3, 4, 5),
-        outer_episodes=120_000,
+        outer_episodes=150_000,
         inner_periods=50,
         carry_over_prices=True,
-        experiment_name="n_player_carryover_simplerule_tab_q_learning_3_state",
+        experiment_name="5_player_simplerule_tab_q_2_state_lastlowest_iflowest",
         allowed_action_ids=(0, 1, 5, 9),
     )
 
@@ -339,10 +339,10 @@ if __name__ == "__main__":
         default_lambda=1.0,
         default_marginal_costs=[2.0, 2.0, 2.0, 2.0, 2.0],
         seeds=(0, 1, 2, 3, 4, 5),
-        outer_episodes=120_000,
+        outer_episodes=150_000,
         inner_periods=50,
         carry_over_prices=True,
-        experiment_name="n_player_carryover_simplerule_reset_tab_q_learning_3_state",
+        experiment_name="5_player_simplerule_reset_tab_q_2_state_lastlowest_iflowest",
         allowed_action_ids=(0, 1, 3, 5, 7, 9, 11),
     )
 

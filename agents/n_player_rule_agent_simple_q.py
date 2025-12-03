@@ -28,7 +28,7 @@ class NPlayerSimpleQLearningRuleAgent:
         epsilon_omega: float,
         time: int = 0,
         *,
-        state_precision: int = 1,
+        price_grid: Optional[Sequence[float]] = None,
         action_library: Optional[MetaActionLibrary] = None,
         allowed_action_ids: Optional[Sequence[int]] = None,
     ) -> None:
@@ -36,7 +36,6 @@ class NPlayerSimpleQLearningRuleAgent:
         self.discount = float(discount_rate)
         self.epsilon_omega = float(epsilon_omega)
         self.state_dim = int(state_dim)
-        self.state_precision = int(state_precision)
         self.timestep = int(time)
 
         self.library = action_library or MetaActionLibrary()
@@ -54,6 +53,14 @@ class NPlayerSimpleQLearningRuleAgent:
             )
 
         self._id_to_action = {action.action_id: action for action in library_actions}
+        if price_grid is None:
+            self.price_grid = None
+        else:
+            grid_arr = np.asarray(price_grid, dtype=np.float32).flatten()
+            if grid_arr.size == 0:
+                raise ValueError("price_grid must contain at least one value")
+            # unique to avoid duplicate grid points affecting snapping
+            self.price_grid = np.unique(grid_arr)
         if allowed_action_ids is None:
             valid_ids = np.arange(self.action_dim, dtype=int)
         else:
@@ -78,13 +85,25 @@ class NPlayerSimpleQLearningRuleAgent:
 
         return float(np.exp(-self.timestep * self.epsilon_omega))
 
+    def _snap_to_grid(self, arr: np.ndarray) -> np.ndarray:
+        """Snap a state vector to the closest values on the provided price grid."""
+
+        if self.price_grid is None:
+            return arr
+
+        diff = np.abs(arr.reshape(-1, 1) - self.price_grid.reshape(1, -1))
+        nearest_idx = np.argmin(diff, axis=1)
+        snapped = self.price_grid[nearest_idx]
+        return snapped.reshape(arr.shape)
+
     def _state_to_key(self, state: Sequence[float]) -> Tuple[float, ...]:
         """Round and flatten the state so it can be used as a hashable key."""
 
         arr = np.asarray(state, dtype=np.float32).flatten()
         if arr.size != self.state_dim:
             raise ValueError(f"Expected state_dim={self.state_dim}, got {arr.size}")
-        return tuple(np.round(arr, self.state_precision).tolist())
+        arr = self._snap_to_grid(arr)
+        return tuple(arr.tolist())
 
     def _row(self, key: Tuple[float, ...]) -> np.ndarray:
         """Return (and create) the Q-vector for a given state key."""

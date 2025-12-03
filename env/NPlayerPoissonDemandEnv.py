@@ -49,6 +49,16 @@ class NPlayerPoissonDemandEnv:
         self.rho = rho # proportion of sophisticated buyers
         self.repricer_cost = repricer_cost
 
+    def snap_price_to_grid(self, price) -> float:
+        """Round an arbitrary price (scalar or array) to the closest grid value."""
+
+        arr = np.asarray(price, dtype=float)
+        # Broadcast against grid: grid is (grid_size,), arr can be any shape
+        diffs = np.abs(self.prices.reshape(-1, 1) - arr.reshape(1, -1))
+        nearest_idx = np.argmin(diffs, axis=0)
+        snapped = self.prices[nearest_idx]
+        return float(snapped) if snapped.shape == () else snapped.reshape(arr.shape)
+
     def _sample_poisson(self, lam: float, size: int) -> np.ndarray:
         """Draw Poisson-distributed arrivals for each period."""
         lam = max(lam, 0.0)
