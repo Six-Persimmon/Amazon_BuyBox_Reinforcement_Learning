@@ -20,22 +20,22 @@ import networkx as nx
 
 from agents.n_player_rule_agent import NPlayerQLearningRuleAgent
 from agents.repricer_meta_actions import MetaAction, MetaActionLibrary
-from env.NPlayerPoissonDemandEnv import NPlayerPoissonDemandEnv
+from env.NPlayerLogitDemandEnv import NPlayerLogitDemandEnv
 
 
 @dataclass
 class EnvironmentConfig:
-    """Parameters used to build :class:`NPlayerPoissonDemandEnv`."""
+    """Parameters used to build :class:`NPlayerLogitDemandEnv`."""
 
-    price_min: float = 0.5
-    price_max: float = 10.0
-    grid_size: int = 20
+    grid_size: int = 10
     a0: float = 0.0
-    a12: float = 10.0
+    a12: float = 2.0
     mu: float = 0.25
-    lam: float = 1.0
-    rho: float = 0.5
     repricer_cost: float = 0.0
+    base_mc: float = 1.0
+    fine_grid_points: int = 200
+    fine_grid_span: float = 4.0
+    max_price: float = None  # Optional override for the maximum price in the grid.
 
 
 @dataclass
@@ -43,19 +43,22 @@ class SimulationConfig:
     """Top-level knobs for the training loop."""
 
     n_players: int
-    outer_episodes: int = 50
-    inner_periods: int = 25
+    outer_episodes: int = 150_000
+    inner_periods: int = 50
     share_parameters: bool = True
+    # Notice: for the marginal costs, the environment's grid is based on base_mc with default 1.0 . It probably doesn't make sense to set `marginal_costs` to anything other than 1.0 unless you also adjust `base_mc` in the environment config accordingly.
     marginal_costs: Optional[Sequence[float]] = None
     seed: Optional[int] = None
     verbose: bool = False
     log_interval: int = 10
 
     # DQN hyperparameters (kept intentionally small for demos)
-    hidden_dim: int = 32
+    # hidden_dim: int = 32
+    hidden_dim: int = 8  # intentionally smaller network
     learning_rate: float = 1e-3
-    discount_rate: float = 0.99
-    epsilon_omega: float = 5e-4
+    discount_rate: float = 0.95
+    # epsilon_omega: float = 5e-4
+    epsilon_omega: float = 5e-5  # align with simple tabular setting
     target_update: int = 100
     replay_capacity: int = 10_000
     batch_size: int = 64
@@ -67,20 +70,19 @@ class SimulationConfig:
     allowed_action_ids: Optional[Sequence[int]] = None
 
 
-def _build_environment(n_players: int, cfg: EnvironmentConfig) -> NPlayerPoissonDemandEnv:
-    """Factory for the pricing environment."""
+def _build_environment(n_players: int, cfg: EnvironmentConfig) -> NPlayerLogitDemandEnv:
+    """Factory for the canonical logit pricing environment."""
 
-    return NPlayerPoissonDemandEnv(
+    return NPlayerLogitDemandEnv(
         n_players=n_players,
-        price_min=cfg.price_min,
-        price_max=cfg.price_max,
         grid_size=cfg.grid_size,
         a0=cfg.a0,
         a12=cfg.a12,
         mu=cfg.mu,
-        lam=cfg.lam,
-        rho=cfg.rho,
         repricer_cost=cfg.repricer_cost,
+        base_mc=cfg.base_mc,
+        fine_grid_points=cfg.fine_grid_points,
+        fine_grid_span=cfg.fine_grid_span,
     )
 
 
@@ -103,15 +105,19 @@ def _make_agent(config: SimulationConfig, action_dim: int, state_dim: int) -> NP
 
 
 def _normalised_observation(
+    # other_last_lowest: float,
+    # own_last_price: float,
+    # 3 dim version:
     avg_price: float,
     avg_lowest_price: float,
     last_lowest_price: float,
     price_scale: float,
 ) -> np.ndarray:
-    """Map episode-level price stats onto the DQN state vector."""
+    """Map last-period price stats onto the DQN state vector."""
 
     price_scale = price_scale or 1.0
 
+    # Previous 3-feature state mapping:
     return np.array(
         [
             avg_price / price_scale,
@@ -120,6 +126,14 @@ def _normalised_observation(
         ],
         dtype=np.float32,
     )
+
+    # return np.array(
+    #     [
+    #         other_last_lowest / price_scale,
+    #         own_last_price / price_scale,
+    #     ],
+    #     dtype=np.float32,
+    # )
 
 def _create_networkx_graph(matrix: np.ndarray) -> "nx.DiGraph":
     """Create a NetworkX directed graph from a weighted adjacency matrix."""
@@ -145,7 +159,6 @@ def _compute_network_metrics(
         "network_density": 0.0,
         "weighted_density": 0.0,
         "in_degree_centralization": 0.0,
-        "weighted_in_degree_centralization": 0.0,
     }
 
     if price_history.size == 0:
@@ -162,72 +175,39 @@ def _compute_network_metrics(
     targeting_mask = [action.base_rule in targeting_rules for action in meta_actions]
     price_tolerance = 1e-9
 
-    anchors: List[int] = [] # List to store anchor sellers per period
+    anchors: List[int] = []
     anchor_id: Optional[int] = None
     for prices in price_history:
         min_price = float(np.min(prices))
-        # Determine anchor seller (lowest price seller from previous period)
         if anchor_id is None or not np.isclose(prices[anchor_id], min_price, atol=price_tolerance):
             tie_indices = np.where(np.isclose(prices, min_price, atol=price_tolerance))[0]
             anchor_id = int(tie_indices[0]) if tie_indices.size else 0
         anchors.append(anchor_id)
 
-    weights = np.zeros((n_players, n_players), dtype=float) # weights[seller, target_seller]
-    current_targets: List[Optional[int]] = [None] * n_players   # current target seller per seller
-    current_streaks: List[int] = [0] * n_players # current targeting streak lengths per seller
-
-    def _finalize_streak(seller_idx: int) -> None:
-        # Finalize the current targeting streak for a given seller, which means given the current target and streak length, update the weights matrix accordingly.
-        target_idx = current_targets[seller_idx]
-        streak = current_streaks[seller_idx]
-        if target_idx is not None and streak > 0:
-            weights[seller_idx, target_idx] = max(weights[seller_idx, target_idx], streak)
-        current_targets[seller_idx] = None
-        current_streaks[seller_idx] = 0
-
-    for anchor_id in anchors: # notice len(anchors) == periods
+    weights = np.zeros((n_players, n_players), dtype=float)  # weights[seller, target_seller]
+    for anchor in anchors:
         for seller_id in range(n_players):
-            if seller_id == anchor_id or not targeting_mask[seller_id]: # skip self-targeting and non-targeting sellers
-                _finalize_streak(seller_id)
+            if seller_id == anchor or not targeting_mask[seller_id]:
                 continue
-            if current_targets[seller_id] == anchor_id:
-                current_streaks[seller_id] += 1
-            else:
-                _finalize_streak(seller_id)
-                current_targets[seller_id] = anchor_id
-                current_streaks[seller_id] = 1
-
-    for seller_idx in range(n_players):
-        _finalize_streak(seller_idx)
+            weights[seller_id, anchor] += 1.0
 
     max_weight = np.max(weights)
     weights_norm = weights / max_weight if max_weight > 0 else weights
     possible_edges = n_players * (n_players - 1)
-    # create directed graph using the normalized weights
-    G = _create_networkx_graph(weights_norm) # weighted directed graph
-    # Density
+
+    G = _create_networkx_graph(weights_norm)
     network_density = nx.density(G)
-    # weighted density
     weighted_density = (np.sum(weights_norm) / possible_edges) if possible_edges else 0.0
 
-    # In degree centralization of the network
     centralities = nx.in_degree_centrality(G)
     max_centrality = max(centralities.values()) if centralities else 0.0
     numerator = sum(max_centrality - c for c in centralities.values())
-    in_deg_centralization = numerator / (n_players - 1) if n_players > 2 else 0.0  # normalize by max possible value. notice networkx already normalized the centralizties for each node by (n_players-1)
-
-    # weighted in-degree centralization
-    weighted_in_degrees = dict(G.in_degree(weight="weight"))
-    max_weighted_in_degree = max(weighted_in_degrees.values()) if weighted_in_degrees else 0.0
-    sum_diff = sum(max_weighted_in_degree - deg for deg in weighted_in_degrees.values())
-    max_possible_sum = (n_players - 1) * max_weighted_in_degree
-    weighted_in_deg_centralization = sum_diff / max_possible_sum if max_possible_sum > 0 else 0.0
+    in_deg_centralization = numerator / (n_players - 1) if n_players > 2 else 0.0
 
     return {
         "network_density": float(network_density),
         "weighted_density": float(weighted_density),
         "in_degree_centralization": float(in_deg_centralization),
-        "weighted_in_degree_centralization": float(weighted_in_deg_centralization),
     }
 
 
@@ -246,6 +226,10 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
     action_dim = len(library.list_actions())
     state_dim = 3  # [avg price, avg lowest price, last lowest price]
     # state_dim = 2 #[avg lowest price, last lowest price]
+    # state_dim = 2  # [lowest price of others last period, own price last period]
+    profit_nash = env.per_seller_profit_nash
+    profit_monopoly = env.per_seller_profit_monopoly
+    norm_profit_denom = profit_monopoly - profit_nash
 
     if config.share_parameters:
         shared_agent = _make_agent(config, action_dim, state_dim)
@@ -259,13 +243,19 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
         if marginal_costs.shape[0] != config.n_players:
             raise ValueError("marginal_costs length must match n_players")
     else:
-        marginal_costs = np.zeros(config.n_players, dtype=float)
+        marginal_costs = np.full(config.n_players, float(env.base_mc), dtype=float) # if there is no MC provided, use base_mc for all players
 
-    price_scale = float(env.price_max)
+    price_scale = float(env.prices[-1])
 
-    prev_avg_prices = [env.price_min] * config.n_players
-    prev_avg_lowest_price = env.price_min
-    prev_last_lowest_price = env.price_min
+    # Dim = 2:
+    prev_other_last_lowest = [env.prices[0]] * config.n_players
+    prev_own_last_price = [env.prices[0]] * config.n_players
+
+    # Dim = 3:
+    prev_avg_prices = [env.prices[0]] * config.n_players
+    prev_avg_lowest_price = env.prices[0]
+    prev_last_lowest_price = env.prices[0]
+
     prev_price_indices: Optional[List[int]] = None
 
     summaries: List[Dict[str, float]] = []
@@ -277,12 +267,20 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
         chosen_ids: List[int] = []
 
         for player_id in range(config.n_players):
+            # Previous 3-feature state:
             state = _normalised_observation(
                 prev_avg_prices[player_id],
                 prev_avg_lowest_price,
                 prev_last_lowest_price,
                 price_scale,
             )
+
+            ## 2-feature state:
+            # state = _normalised_observation(
+            #     prev_other_last_lowest[player_id],
+            #     prev_own_last_price[player_id],
+            #     price_scale,
+            # )
             states.append(state)
             action = agents[player_id].take_action(state)
             chosen_actions.append(action)
@@ -300,19 +298,31 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
         avg_prices = np.asarray(result["average_prices"], dtype=float)
         avg_lowest = float(result["average_lowest_price"])
         price_history = np.asarray(result["price_history"], dtype=float)
-        last_lowest = float(np.min(price_history[-1])) if price_history.size else avg_lowest # last period's lowest price
+        last_prices = price_history[-1] if price_history.size else np.full(config.n_players, float(env.prices[0]), dtype=float)
+        last_lowest = float(np.min(last_prices)) if last_prices.size else float(env.prices[0])
+        other_last_lowest = []
+        for player_id in range(config.n_players):
+            others = np.delete(last_prices, player_id)
+            other_last_lowest.append(float(np.min(others)) if others.size else float(last_prices[player_id]))
         repricer_share = float(np.mean(result["repricer_usage"]))
         metrics = _compute_network_metrics(price_history, chosen_actions)
         done_flag = episode == (config.outer_episodes - 1)
 
         for player_id in range(config.n_players):
-            # The state variables we use: own avg price, avg lowest price, last inner loop period lowest price
+            # Previous 3-feature next_state:
             next_state = _normalised_observation(
                 avg_prices[player_id],
                 avg_lowest,
                 last_lowest,
                 price_scale,
             )
+
+            # # 2-feature next_state:
+            # next_state = _normalised_observation(
+            #     other_last_lowest[player_id],
+            #     last_prices[player_id],
+            #     price_scale,
+            # )
             agents[player_id].store_transition(
                 states[player_id],
                 chosen_ids[player_id],
@@ -324,9 +334,15 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
             if loss is not None:
                 loss_trace.append(loss)
 
+        # Dim = 2:
+        # prev_other_last_lowest = other_last_lowest
+        # prev_own_last_price = last_prices.tolist()
+
+        # Dim = 3:
         prev_avg_prices = avg_prices.tolist()
         prev_avg_lowest_price = avg_lowest
         prev_last_lowest_price = last_lowest
+
         if config.carry_over_prices:
             final_indices = result.get("final_prices_idx")
             if final_indices is not None:
@@ -340,13 +356,17 @@ def run_simulation(config: SimulationConfig) -> Dict[str, List[Dict[str, float]]
             {
                 "episode": float(episode),
                 "mean_profit": float(np.mean(rewards)),
+                "norm_profit": float(
+                    (np.mean(rewards) - profit_nash) / norm_profit_denom
+                )
+                if norm_profit_denom != 0
+                else float("nan"),
                 'avg_price': float(np.mean(avg_prices)),
                 "avg_lowest_price": avg_lowest,
                 "repricer_share": repricer_share,
                 "network_density": metrics["network_density"],
                 "weighted_density": metrics["weighted_density"],
                 "in_degree_centralization": metrics["in_degree_centralization"],
-                "weighted_in_degree_centralization": metrics["weighted_in_degree_centralization"],
             }
         )
 

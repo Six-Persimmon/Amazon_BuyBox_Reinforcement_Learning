@@ -54,16 +54,10 @@ def runs_to_frame(data: dict) -> pd.DataFrame:
                 row = {
                     "scenario": label,
                     "seed": seed,
-                    "episode": summary.get("episode"),
-                    "mean_profit": summary.get("mean_profit"),
-                    "avg_price": summary.get("avg_price"),
-                    "avg_lowest_price": summary.get("avg_lowest_price"),
-                    "repricer_share": summary.get("repricer_share"),
-                    "network_density": summary.get("network_density"),
-                    "weighted_density": summary.get("weighted_density"),
-                    "in_degree_centralization": summary.get("in_degree_centralization"),
-                    "weighted_in_degree_centralization": summary.get("weighted_in_degree_centralization"),
                 }
+                for key, value in summary.items():
+                    if isinstance(value, (int, float, bool)):
+                        row[key] = value
                 records.append(row)
     frame = pd.DataFrame.from_records(records)
     if frame.empty:

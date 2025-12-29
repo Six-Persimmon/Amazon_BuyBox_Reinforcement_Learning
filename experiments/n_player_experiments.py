@@ -29,13 +29,13 @@ _ACTION_SHARE_FIELDS = [f"action_share_{action.name}" for action in MetaActionLi
 SUMMARY_FIELDS = [
     "episode",
     "mean_profit",
+    "norm_profit",
     "avg_price",
     "avg_lowest_price",
     "repricer_share",
     "network_density",
     "weighted_density",
     "in_degree_centralization",
-    "weighted_in_degree_centralization",
 ] + _ACTION_SHARE_FIELDS
 
 
@@ -182,66 +182,6 @@ def _save_payload(
     return path
 
 
-def experiment_compare_parameter_sharing(
-    *,
-    n_players: int = 5,
-    outer_episodes: int = 20_000,
-    inner_periods: int = 50,
-    seeds: Sequence[int] = (0, 1, 2),
-    max_workers: int | None = None,
-    verbose: bool = True,
-    log_interval: int | None = None,
-) -> Path:
-    """Compare market outcomes with and without parameter sharing."""
-
-    base_config = SimulationConfig(
-        n_players=n_players,
-        outer_episodes=outer_episodes,
-        inner_periods=inner_periods,
-        share_parameters=True,
-        seed=None,
-        environment=EnvironmentConfig(),
-        marginal_costs=[2.0 for _ in range(n_players)],
-        verbose=verbose,
-        log_interval=log_interval if log_interval is not None else max(1, outer_episodes // 10),
-    )
-
-    configs: List[SimulationConfig] = []
-    for share_flag in (True, False):
-        for seed in seeds:
-            cfg = replace(base_config, share_parameters=share_flag, seed=seed)
-            configs.append(cfg)
-
-    records = _run_batch(configs, max_workers=max_workers)
-    episode_frame, run_info = _records_to_frame(records)
-
-    scenario_payloads = []
-    for share_flag, label in ((True, "shared_parameters"), (False, "independent_agents")):
-        runs = [info for info in run_info if info["share_parameters"] == share_flag]
-        scenario_frame = episode_frame[episode_frame["share_parameters"] == share_flag]
-        scenario_payloads.append(
-            {
-                "label": label,
-                "share_parameters": share_flag,
-                "runs": runs,
-                "summary": _aggregate_final_metrics(scenario_frame),
-            }
-        )
-
-    payload = {
-        "experiment": "compare_parameter_sharing",
-        "generated_at": _timestamp(),
-        "n_players": n_players,
-        "outer_episodes": outer_episodes,
-        "inner_periods": inner_periods,
-        "seeds": list(seeds),
-        "scenarios": scenario_payloads,
-    }
-
-    path = _save_payload("compare_parameter_sharing", payload, episode_frame)
-    print(f"Saved comparison results to {path}")
-    return path
-
 
 def experiment_n_player_market_composition(
     *,
@@ -259,7 +199,7 @@ def experiment_n_player_market_composition(
     max_workers: int | None = None,
     verbose: bool = True,
     log_interval: int | None = None,
-    carry_over_prices: bool = False,
+    carry_over_prices: bool = True,
     allowed_action_ids: Sequence[int] | None = None,
 ) -> Path:
     """Run a simple suite of market composition experiments."""
@@ -278,10 +218,9 @@ def experiment_n_player_market_composition(
         share_flag = bool(spec.get("share_parameters", share_parameters))
         label = spec.get("label") or f"rho_{rho_value}"
 
+        # EnvironmentConfig no longer has lam or rho; they are kept only as scenario metadata.
         env_kwargs = {
             **spec.get("environment", {}),
-            "lam": lam_value,
-            "rho": rho_value,
             "repricer_cost": repricer_cost,
         }
         environment = EnvironmentConfig(**env_kwargs)
@@ -368,227 +307,175 @@ def experiment_n_player_market_composition(
     return path
 
 
-def experiment_two_player_baseline(
+def experiment_n_player_logit(
     *,
-    experiment_name: str = "two_player_baseline",
-    scenarios: Sequence[Dict[str, object]] = (),
-    default_lambda: float = 1.0,
-    default_rho: float = 1.0,
-    default_marginal_costs: Sequence[float] | None = None,
-    default_repricer_cost: float = 0.0,
-    share_parameters: bool = False,
-    outer_episodes: int = 100_000,
-    inner_periods: int = 100,
-    seeds: Sequence[int] = (0, 1, 2, 3, 4),
+    experiment_name: str = "n_player_logit",
+    simulation_config: SimulationConfig | None = None,
+    environment_config: EnvironmentConfig | None = None,
+    seeds: Sequence[int] = (0, 1, 2),
     max_workers: int | None = None,
-    verbose: bool = True,
-    log_interval: int | None = None,
-    carry_over_prices: bool = False,
 ) -> Path:
-    """Run baseline experiments for two-player market with flexible scenario configuration."""
+    """Run repeated logit-demand simulations for a fixed config over multiple seeds.
 
-    n_players = 2  # Fixed at 2 for this experiment
-    scenario_list = [dict(item) for item in scenarios]
-    log_every = log_interval if log_interval is not None else max(1, outer_episodes // 10)
+    This is a simplified experiment harness for the canonical logit environment.
+    It takes a single SimulationConfig and EnvironmentConfig, runs multiple
+    seeds in parallel, and aggregates the per-episode summaries into the same
+    payload format used by ``experiment_n_player_market_composition``.
+    """
 
+    # Default configs: 5-player logit market, no parameter sharing.
+    base_env = environment_config or EnvironmentConfig()
+    base_sim = simulation_config or SimulationConfig(
+        n_players=5,
+        share_parameters=False,
+    )
+
+    # Build per-seed SimulationConfig instances.
     configs: List[SimulationConfig] = []
-    scenario_details: List[Dict[str, object]] = []
-
-    for idx, spec in enumerate(scenario_list):
-        lam_value = spec.get("lam", spec.get("lambda", default_lambda))
-        rho_value = spec.get("rho", default_rho)
-        repricer_cost = spec.get("repricer_cost", default_repricer_cost)
-        share_flag = bool(spec.get("share_parameters", share_parameters))
-        label = spec.get("label") or f"rho_{rho_value}"
-
-        env_kwargs = {
-            **spec.get("environment", {}),
-            "lam": lam_value,
-            "rho": rho_value,
-            "repricer_cost": repricer_cost,
-        }
-        environment = EnvironmentConfig(**env_kwargs)
-
-        marginal_costs = spec.get("marginal_costs")
-        if marginal_costs is None:
-            if default_marginal_costs is not None:
-                marginal_costs = list(default_marginal_costs)
-            else:
-                marginal_costs = [2.0] * n_players
-        else:
-            marginal_costs = list(marginal_costs)
-
-        if len(marginal_costs) != n_players:
-            raise ValueError(f"Scenario '{label}' expected {n_players} marginal costs, got {len(marginal_costs)}")
-
-        base_config = SimulationConfig(
-            n_players=n_players,
-            outer_episodes=outer_episodes,
-            inner_periods=inner_periods,
-            share_parameters=share_flag,
-            seed=None,
-            environment=environment,
-            marginal_costs=marginal_costs,
-            verbose=verbose,
-            log_interval=log_every,
-            scenario_label=label,
-            carry_over_prices=carry_over_prices,
+    for seed in seeds:
+        cfg = replace(
+            base_sim,
+            seed=seed,
+            environment=base_env,
         )
+        configs.append(cfg)
 
-        for seed in seeds:
-            configs.append(replace(base_config, seed=seed))
-
-        scenario_details.append(
-            {
-                "label": label,
-                "n_players": n_players,
-                "rho": rho_value,
-                "lam": lam_value,
-                "repricer_cost": repricer_cost,
-                "marginal_costs": marginal_costs,
-                "share_parameters": share_flag,
-            }
-        )
-
+    # Run all seeds (in parallel if max_workers > 0).
     records = _run_batch(configs, max_workers=max_workers)
     episode_frame, run_info = _records_to_frame(records)
 
-    scenario_payloads: List[Dict[str, object]] = []
-    for detail in scenario_details:
-        label = detail["label"]
-        scenario_rows = episode_frame[episode_frame["scenario"] == label]
-        runs = [info for info in run_info if info["scenario"] == label]
-        scenario_payloads.append({**detail, "runs": runs, "summary": _aggregate_final_metrics(scenario_rows)})
+    # For this experiment, there is a single logical scenario.
+    label = base_sim.scenario_label or "logit"
+    scenario_rows = episode_frame[episode_frame["scenario"] == label] if not episode_frame.empty else episode_frame
+    runs = [info for info in run_info if info["scenario"] == label] if run_info else run_info
+
+    # Infer marginal costs used in simulation for metadata.
+    if base_sim.marginal_costs is not None:
+        mc_list = list(base_sim.marginal_costs)
+    else:
+        mc_list = [float(base_env.base_mc)] * base_sim.n_players
+
+    scenario_detail: Dict[str, object] = {
+        "label": label,
+        "n_players": base_sim.n_players,
+        # lam and rho are not used in the logit environment; they are omitted here.
+        "repricer_cost": base_env.repricer_cost,
+        "marginal_costs": mc_list,
+        "share_parameters": base_sim.share_parameters,
+        "environment": asdict(base_env),
+    }
+
+    scenario_payload = {
+        **scenario_detail,
+        "runs": runs,
+        "summary": _aggregate_final_metrics(scenario_rows),
+    }
 
     payload = {
         "experiment": experiment_name,
         "generated_at": _timestamp(),
-        "outer_episodes": outer_episodes,
-        "inner_periods": inner_periods,
+        "outer_episodes": base_sim.outer_episodes,
+        "inner_periods": base_sim.inner_periods,
         "seeds": list(seeds),
-        "share_parameters_default": share_parameters,
-        "scenarios": scenario_payloads,
+        "share_parameters_default": base_sim.share_parameters,
+        "scenarios": [scenario_payload],
     }
 
-    distinct_lambdas = sorted({detail["lam"] for detail in scenario_details})
-    rho_values = [detail["rho"] for detail in scenario_details]
-    distinct_costs = sorted({detail["repricer_cost"] for detail in scenario_details})
-
-    params_for_name: Dict[str, object] = {"N": n_players}
-    if distinct_lambdas:
-        params_for_name["lambda"] = distinct_lambdas if len(distinct_lambdas) > 1 else distinct_lambdas[0]
-    if rho_values:
-        params_for_name["rho"] = rho_values if len(set(rho_values)) > 1 else rho_values[0]
-    if distinct_costs and any(cost != 0 for cost in distinct_costs):
-        params_for_name["c"] = distinct_costs if len(distinct_costs) > 1 else distinct_costs[0]
+    # Build a concise identifier for the saved artifact.
+    params_for_name: Dict[str, object] = {
+        "N": base_sim.n_players,
+    }
+    if base_sim.allowed_action_ids is not None:
+        params_for_name["actions"] = list(base_sim.allowed_action_ids)
 
     path = _save_payload(experiment_name, payload, episode_frame, params_for_name)
-    print(f"Saved two-player baseline results to {path}")
+    print(f"Saved logit-demand results to {path}")
     return path
 
 
 if __name__ == "__main__":
     import time
+
     start_time = time.time()
-    print(f"Starting Simulation at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
+    print(f"Starting simulation at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
 
-    rho_sweep_scenarios: Sequence[Dict[str, object]] = (
-    {"label": "rho_1", "rho": 1.0},
-    {"label": "rho_0.9", "rho": 0.9},
-    {"label": "rho_0.5", "rho": 0.5},
-    {"label": "rho_0.1", "rho": 0.1},
-    {"label": "rho_0", "rho": 0.0},
+    # Derive action ID sets for:
+    # (1) basic actions only (no reset/raise); and
+    # (2) basic actions plus reset (still no raise_if_below_min).
+    library = MetaActionLibrary()
+    actions = library.list_actions()
+
+    basic_action_ids = [
+        a.action_id
+        for a in actions
+        if (
+            a.is_static
+            or (
+                a.base_rule in {"match", "undercut", "above"}
+                and not a.reset_when_below_cost
+                and not a.raise_if_below_min
+            )
+        )
+    ]
+
+    basic_plus_reset_ids = [
+        a.action_id
+        for a in actions
+        if (
+            a.is_static
+            or (
+                a.base_rule in {"match", "undercut", "above"}
+                and a.reset_when_below_cost
+                and not a.raise_if_below_min
+            )
+        )
+    ]
+
+    # Common environment configuration: canonical logit demand with Calvano/Wang parameters.
+    env_cfg = EnvironmentConfig()
+
+    # New Env: hold others same but let a12 = 10
+    env_maxprice_4_cfg = replace(env_cfg,
+                             max_price=4.0)
+
+    # (A) Experiment with basic actions only.
+    sim_cfg_basic = SimulationConfig(
+        n_players=5,
+        outer_episodes=120_000,
+        inner_periods=50,
+        share_parameters=False,
+        allowed_action_ids=basic_action_ids,
+        verbose=True,
+        log_interval=1000
     )
-    # experiment_compare_parameter_sharing()
+    path_basic = experiment_n_player_logit(
+        # experiment_name="5_player_logit_dqn_baseactions_3_state_avgprice_avglowest_lastlowest",
+        experiment_name="5_player_logit_maxprice_4_dqn_baseactions_3_state_avgprice_avglowest_lastlowest",
+        simulation_config=sim_cfg_basic,
+        # environment_config=env_cfg,
+        environment_config=env_maxprice_4_cfg,
+        seeds=(0, 1, 2, 3, 4),
+        max_workers=None,
+    )
+    print(f"Basic-actions experiment saved to: {path_basic}")
 
-    # # Experiment: two-player baseline with varying rho values
-    # experiment_two_player_baseline(scenarios=rho_sweep_scenarios,
-    #                                default_lambda=1.0,
-    #                                default_marginal_costs=[2.0, 2.0],
-    #                                seeds=(0, 1, 2, 3, 4),
-    #                                outer_episodes=200_000,
-    #                                inner_periods=50,
-    #                                carry_over_prices=True,
-    #                                experiment_name="two_player_baseline_carryover"
-    #                                )
+    # (B) Experiment with basic actions plus reset variants.
+    sim_cfg_reset = replace(
+        sim_cfg_basic,
+        allowed_action_ids=basic_plus_reset_ids,
+    )
+    path_reset = experiment_n_player_logit(
+        experiment_name="5_player_logit_maxprice_4_dqn_baseactions_reset_3_state_avgprice_avglowest_lastlowest",
+        simulation_config=sim_cfg_reset,
+        # environment_config=env_cfg,
+        environment_config=env_maxprice_4_cfg,
+        seeds=(0, 1, 2, 3, 4),
+        max_workers=None,
+    )
+    print(f"Basic+reset experiment saved to: {path_reset}")
 
-    # # Experiment: n-player market composition with varying rho values
-    # experiment_n_player_market_composition(scenarios=rho_sweep_scenarios,
-    #                                        default_n_players=5,
-    #                                        default_lambda=1.0,
-    #                                        default_marginal_costs=[2.0, 2.0, 2.0, 2.0, 2.0],
-    #                                        seeds=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    #                                        outer_episodes=150_000,
-    #                                        inner_periods=50,
-    #                                        carry_over_prices=True,
-    #                                        experiment_name="n_player_market_composition_carryover",
-    #                                        allowed_action_ids=(0, 1, 5, 9),
-    #                                        )
-    
-    # Experiment: n-player market composition with varying rho values
-    experiment_n_player_market_composition(scenarios=rho_sweep_scenarios,
-                                           default_n_players=5,
-                                           default_lambda=1.0,
-                                           default_marginal_costs=[2.0, 2.0, 2.0, 2.0, 2.0],
-                                           seeds=(0, 1, 2, 3, 4, 5),
-                                           outer_episodes=120_000,
-                                           inner_periods=50,
-                                           carry_over_prices=True,
-                                           experiment_name="n_player_market_composition_carryover_reset",
-                                           allowed_action_ids=(0, 1, 5, 9),
-                                           )
-    
-    # experiment_n_player_market_composition(scenarios=rho_sweep_scenarios,
-    #                                     default_n_players=10,
-    #                                     default_lambda=1.0,
-    #                                     default_marginal_costs=[2.0] * 10,
-    #                                     seeds=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    #                                     outer_episodes=150_000,
-    #                                     inner_periods=50,
-    #                                     carry_over_prices=True,
-    #                                     experiment_name="n_player_market_composition_carryover"
-    #                                     )
-    
-    # experiment_n_player_market_composition(scenarios=rho_sweep_scenarios,
-    #                                        default_n_players=3,
-    #                                        default_lambda=1.0,
-    #                                        default_marginal_costs=[2.0, 2.0, 2.0],
-    #                                        seeds=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    #                                        outer_episodes=150_000,
-    #                                        inner_periods=50,
-    #                                        carry_over_prices=True,
-    #                                        experiment_name="n_player_market_composition_carryover"
-    #                                        )
-    
-    # experiment_n_player_market_composition(scenarios=rho_sweep_scenarios,
-    #                                     default_n_players=2,
-    #                                     default_lambda=1.0,
-    #                                     default_marginal_costs=[2.0, 2.0],
-    #                                     seeds=(0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
-    #                                     outer_episodes=150_000,
-    #                                     inner_periods=50,
-    #                                     carry_over_prices=True,
-    #                                     experiment_name="n_player_market_composition_carryover"
-    #                                     )
-    # # Experiment: n-player market composition with varying rho values. One/Two player(s) has a cost advantage.
-    # experiment_n_player_market_composition(scenarios=rho_sweep_scenarios,
-    #                                        default_lambda=1.0,
-    #                                        default_marginal_costs=[1.0, 2.0, 2.0, 2.0, 2.0],
-    #                                        seeds=(0, 1, 2, 3, 4, 5),
-    #                                        outer_episodes=120_000,
-    #                                        inner_periods=50,
-    #                                        carry_over_prices=True,
-    #                                        experiment_name="n_player_market_composition_carryover_1_cost_advantage"
-    #                                        )
-    
-    # experiment_n_player_market_composition(scenarios=rho_sweep_scenarios,
-    #                                     default_lambda=1.0,
-    #                                     default_marginal_costs=[1.0, 1.0, 2.0, 2.0, 2.0],
-    #                                     seeds=(0, 1, 2, 3, 4, 5),
-    #                                     outer_episodes=120_000,
-    #                                     inner_periods=50,
-    #                                     carry_over_prices=True,
-    #                                     experiment_name="n_player_market_composition_carryover_2_cost_advantage"
-    #                                     )
     end_time = time.time()
-    print(f"Total experiment time (hours and minutes): {(end_time - start_time)//3600}h {((end_time - start_time)%3600)//60}m"  )
+    print(
+        f"Total experiment time (hours and minutes): "
+        f"{(end_time - start_time) // 3600}h {((end_time - start_time) % 3600) // 60}m"
+    )

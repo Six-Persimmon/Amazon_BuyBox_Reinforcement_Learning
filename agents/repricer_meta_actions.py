@@ -35,7 +35,7 @@ class MetaAction:
 
 class MetaActionExecutor:
     """Maintains per-agent state for a selected meta action.
-    Input: MetaAction, price grid, marginal cost of the current agent
+    Input: MetaAction, price grid
     Output: next price index given the competitor minimum price index
     """
 
@@ -43,23 +43,21 @@ class MetaActionExecutor:
         self,
         action: MetaAction,
         price_grid: np.ndarray,
-        marginal_cost: float,
         current_index: int = -1,
     ) -> None:
         self.action = action
         self.price_grid = price_grid
-        self.marginal_cost = marginal_cost
-        self.marginal_cost_idx = int(np.argmin(np.abs(price_grid - marginal_cost)))
         self.current_index = current_index if current_index >= 0 else self._initial_index()
         self.raise_on = 0 # counters to ensure raise/reset only trigger in the second consecutive time condition is met. i.e. raise_on = 2
         self.reset_on = 0
 
     def _initial_index(self) -> int:
-        "Pick a random initial price above marginal cost from uniform distribution in the price grid."
-        lower = max(self.marginal_cost, float(self.price_grid[0]))
-        price = np.random.uniform(lower, float(self.price_grid[-1]))
+        """Pick a random initial price between the lowest and highest grid point."""
+        low = float(self.price_grid[0])
+        high = float(self.price_grid[-1])
+        price = np.random.uniform(low, high)
         idx = int(np.argmin(np.abs(self.price_grid - price)))
-        return max(idx, self.marginal_cost_idx)
+        return idx
 
     def next_price_index(self, competitor_min_idx: int) -> int:
         if self.action.is_static:
@@ -69,8 +67,8 @@ class MetaActionExecutor:
         next_idx = self.current_index
         grid_last = len(self.price_grid) - 1
 
-        if self.action.base_rule == "undercut": # undercut will not go below marginal cost
-            next_idx = max(competitor_min_idx - 1, self.marginal_cost_idx)
+        if self.action.base_rule == "undercut":  # undercut will not go below NE price (lowest grid)
+            next_idx = max(competitor_min_idx - 1, 0)
         elif self.action.base_rule == "match":
             next_idx = competitor_min_idx
         elif self.action.base_rule == "above":
@@ -88,14 +86,14 @@ class MetaActionExecutor:
                 self.raise_on = 0
 
         if self.action.reset_when_below_cost:
-            if self.price_grid[next_idx] <= self.marginal_cost: # should be marginal cost index
+            # Reset when the price hits the lowest grid point (NE price), not when it goes below cost.
+            if next_idx == 0:
                 reset_idx = grid_last
                 self.reset_on += 1
             else:
                 self.reset_on = 0
-        
         # Reset and raise are mutually exclusive. Reset has priority.
-        # Reset/Raise does not apply the first time the price goes below cost. It applies to the consecutive second time.
+        # Reset/Raise does not apply the first time the price hits the lowest grid point. It applies on the consecutive second time.
         if self.reset_on > 1 and reset_idx is not None:
             next_idx = reset_idx
         elif self.raise_on > 1 and raise_idx is not None:
@@ -183,10 +181,9 @@ class MetaActionLibrary:
 def create_action_executor(
     action: MetaAction,
     price_grid: np.ndarray,
-    marginal_cost: float,
     current_index: int = -1,
 ) -> MetaActionExecutor:
-    return MetaActionExecutor(action, price_grid, marginal_cost, current_index)
+    return MetaActionExecutor(action, price_grid, current_index)
 
 
 def build_observation_vector(
@@ -218,5 +215,4 @@ __all__ = [
     "MetaActionExecutor",
     "MetaActionLibrary",
     "create_action_executor",
-    # "build_feature_vector",
 ]

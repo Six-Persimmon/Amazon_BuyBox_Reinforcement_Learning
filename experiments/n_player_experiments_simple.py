@@ -10,6 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,11 +29,13 @@ _ACTION_SHARE_FIELDS = [f"action_share_{action.name}" for action in MetaActionLi
 SUMMARY_FIELDS = [
     "episode",
     "mean_profit",
+    "norm_profit",
     "avg_price",
     "avg_lowest_price",
     "repricer_share",
     "network_density",
     "weighted_density",
+    "in_degree_centralization",
 ] + _ACTION_SHARE_FIELDS
 
 
@@ -181,43 +184,38 @@ def _save_payload(experiment_name, payload, frame, params_dict=None):
 
 
 def experiment_n_player_market_composition(
-    experiment_name="n_player_market_composition",
-    scenarios=(),
-    default_n_players=5,
-    default_lambda=1.0,
-    default_rho=0.5,
-    default_marginal_costs=None,
-    default_repricer_cost=0.0,
-    share_parameters=False,
-    outer_episodes=100_000,
-    inner_periods=50,
-    seeds=(0, 1, 2),
-    max_workers=None,
-    verbose=True,
-    log_interval=None,
-    carry_over_prices=True,
-    allowed_action_ids=None,
-):
+    *,
+    experiment_name: str = "n_player_market_composition",
+    scenarios: Sequence[Dict[str, object]] = (),
+    default_n_players: int = 5,
+    default_marginal_costs: Sequence[float] | None = None,
+    default_repricer_cost: float = 0.0,
+    share_parameters: bool = False,
+    outer_episodes: int = 100_000,
+    inner_periods: int = 50,
+    seeds: Sequence[int] = (0, 1, 2),
+    max_workers: int | None = None,
+    verbose: bool = True,
+    log_interval: int | None = None,
+    carry_over_prices: bool = True,
+    allowed_action_ids: Sequence[int] | None = None,
+) -> Path:
     """Run a suite of market composition experiments using the tabular agent."""
 
     scenario_list = [dict(item) for item in scenarios]
     log_every = log_interval if log_interval is not None else max(1, outer_episodes // 10)
 
-    configs = []
-    scenario_details = []
+    configs: List[SimulationConfig] = []
+    scenario_details: List[Dict[str, object]] = []
 
     for idx, spec in enumerate(scenario_list):
         n_players = spec.get("n_players", default_n_players)
-        lam_value = spec.get("lam", spec.get("lambda", default_lambda))
-        rho_value = spec.get("rho", default_rho)
         repricer_cost = spec.get("repricer_cost", default_repricer_cost)
         share_flag = bool(spec.get("share_parameters", share_parameters))
-        label = spec.get("label") or f"rho_{rho_value}"
+        label = spec.get("label") or f"scenario_{idx}"
 
         env_kwargs = {
             **spec.get("environment", {}),
-            "lam": lam_value,
-            "rho": rho_value,
             "repricer_cost": repricer_cost,
         }
         environment = EnvironmentConfig(**env_kwargs)
@@ -227,7 +225,7 @@ def experiment_n_player_market_composition(
             if default_marginal_costs is not None:
                 marginal_costs = list(default_marginal_costs)
             else:
-                marginal_costs = [2.0] * n_players
+                marginal_costs = [float(environment.base_mc)] * n_players
         else:
             marginal_costs = list(marginal_costs)
 
@@ -256,11 +254,10 @@ def experiment_n_player_market_composition(
             {
                 "label": label,
                 "n_players": n_players,
-                "rho": rho_value,
-                "lam": lam_value,
                 "repricer_cost": repricer_cost,
                 "marginal_costs": marginal_costs,
                 "share_parameters": share_flag,
+                "environment": asdict(environment),
             }
         )
 
@@ -287,17 +284,11 @@ def experiment_n_player_market_composition(
     }
 
     distinct_players = sorted({detail["n_players"] for detail in scenario_details})
-    distinct_lambdas = sorted({detail["lam"] for detail in scenario_details})
-    rho_values = [detail["rho"] for detail in scenario_details]
     distinct_costs = sorted({detail["repricer_cost"] for detail in scenario_details})
 
     params_for_name = {}
     if distinct_players:
         params_for_name["N"] = distinct_players if len(distinct_players) > 1 else distinct_players[0]
-    if distinct_lambdas:
-        params_for_name["lambda"] = distinct_lambdas if len(distinct_lambdas) > 1 else distinct_lambdas[0]
-    if rho_values:
-        params_for_name["rho"] = rho_values if len(set(rho_values)) > 1 else rho_values[0]
     if distinct_costs and any(cost != 0 for cost in distinct_costs):
         params_for_name["c"] = distinct_costs if len(distinct_costs) > 1 else distinct_costs[0]
 
@@ -306,45 +297,331 @@ def experiment_n_player_market_composition(
     return path
 
 
+def experiment_n_player_logit(
+    *,
+    experiment_name: str = "n_player_logit",
+    simulation_config: SimulationConfig | None = None,
+    environment_config: EnvironmentConfig | None = None,
+    seeds: Sequence[int] = (0, 1, 2),
+    max_workers: int | None = None,
+) -> Path:
+    """Run repeated logit-demand simulations for a fixed config over multiple seeds."""
+
+    base_env = environment_config or EnvironmentConfig()
+    base_sim = simulation_config or SimulationConfig(
+        n_players=5,
+        share_parameters=False,
+    )
+    base_sim = replace(base_sim, scenario_label=base_sim.scenario_label or "logit")
+
+    configs: List[SimulationConfig] = []
+    for seed in seeds:
+        cfg = replace(
+            base_sim,
+            seed=seed,
+            environment=base_env,
+        )
+        configs.append(cfg)
+
+    records = _run_batch(configs, max_workers=max_workers)
+    episode_frame, run_info = _records_to_frame(records)
+
+    label = base_sim.scenario_label
+    scenario_rows = episode_frame[episode_frame["scenario"] == label] if not episode_frame.empty else episode_frame
+    runs = [info for info in run_info if info["scenario"] == label] if run_info else run_info
+
+    if base_sim.marginal_costs is not None:
+        mc_list = list(base_sim.marginal_costs)
+    else:
+        mc_list = [float(base_env.base_mc)] * base_sim.n_players
+
+    scenario_detail: Dict[str, object] = {
+        "label": label,
+        "n_players": base_sim.n_players,
+        "repricer_cost": base_env.repricer_cost,
+        "marginal_costs": mc_list,
+        "share_parameters": base_sim.share_parameters,
+        "environment": asdict(base_env),
+    }
+
+    scenario_payload = {
+        **scenario_detail,
+        "runs": runs,
+        "summary": _aggregate_final_metrics(scenario_rows),
+    }
+
+    payload = {
+        "experiment": experiment_name,
+        "generated_at": _timestamp(),
+        "outer_episodes": base_sim.outer_episodes,
+        "inner_periods": base_sim.inner_periods,
+        "seeds": list(seeds),
+        "share_parameters_default": base_sim.share_parameters,
+        "scenarios": [scenario_payload],
+    }
+
+    params_for_name: Dict[str, object] = {
+        "N": base_sim.n_players,
+    }
+    if base_sim.allowed_action_ids is not None:
+        params_for_name["actions"] = list(base_sim.allowed_action_ids)
+
+    path = _save_payload(experiment_name, payload, episode_frame, params_for_name)
+    print(f"Saved logit-demand results to {path}")
+    return path
+
+
 if __name__ == "__main__":
     import time
 
     start_time = time.time()
-    print(f"Starting Simulation at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
+    print(f"Starting simulation at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
 
-    rho_sweep_scenarios = (
-        {"label": "rho_1", "rho": 1.0},
-        {"label": "rho_0.9", "rho": 0.9},
-        {"label": "rho_0.5", "rho": 0.5},
-        {"label": "rho_0.1", "rho": 0.1},
-        {"label": "rho_0", "rho": 0.0},
+    library = MetaActionLibrary()
+    actions = library.list_actions()
+
+    # (1) basic actions only (no reset/raise); and
+    # (2) basic actions plus reset (still no raise_if_below_min).
+    # (3) basic actions only without the static actions.
+    basic_action_ids = [
+        a.action_id
+        for a in actions
+        if (
+            a.is_static
+            or (
+                a.base_rule in {"match", "undercut", "above"}
+                and not a.reset_when_below_cost
+                and not a.raise_if_below_min
+            )
+        )
+    ]
+
+    basic_plus_reset_ids = [
+        a.action_id
+        for a in actions
+        if (
+            a.is_static
+            or (
+                a.base_rule in {"match", "undercut", "above"}
+                and not a.raise_if_below_min # allow reset
+            )
+        )
+    ]
+
+    basic_action_no_static_ids = [
+        a.action_id
+        for a in actions
+        if (
+            not a.is_static
+            and a.base_rule in {"match", "undercut", "above"}
+            and not a.reset_when_below_cost
+            and not a.raise_if_below_min
+        )
+    ]
+
+    base_action_no_static_plus_reset_ids = [
+        a.action_id
+        for a in actions
+        if (
+            not a.is_static
+            and a.base_rule in {"match", "undercut", "above"}
+            and not a.raise_if_below_min # both base and base + reset
+        )
+    ]
+
+    # only reset action ids: undercut_reset, above_reset, match_reset
+    reset_action_only_ids = [
+        a.action_id
+        for a in actions
+        if (
+            not a.is_static
+            and a.reset_when_below_cost
+            and not a.raise_if_below_min
+        )
+    ]
+
+    env_cfg = EnvironmentConfig(
+        grid_size = 10,
+        a0 = 0.0,
+        a12 = 2.0,
+        mu = 0.25,
+        repricer_cost = 0.0,
+        base_mc = 1.0,
+        fine_grid_points = 200,
+        fine_grid_span = 4.0,
+        max_price = None  # Optional override for the maximum price in the grid.
     )
 
-    experiment_n_player_market_composition(
-        scenarios=rho_sweep_scenarios,
-        default_n_players=5,
-        default_lambda=1.0,
-        default_marginal_costs=[2.0, 2.0, 2.0, 2.0, 2.0],
-        seeds=(0, 1, 2, 3, 4, 5),
-        outer_episodes=150_000,
+    env_cfg_mu_01 = EnvironmentConfig(
+        grid_size = 10,
+        a0 = 0.0,
+        a12 = 2.0,
+        mu = 0.01, # set mu to 0.01, which should lead to circles
+        repricer_cost = 0.0,
+        base_mc = 1.0,
+        fine_grid_points = 200,
+        fine_grid_span = 4.0,
+        max_price = None  # Optional override for the maximum price in the grid.
+    )
+
+    env_cfg_mu_005 = EnvironmentConfig(
+        grid_size = 10,
+        a0 = 0.0,
+        a12 = 2.0,
+        mu = 0.005, # set mu to 0.005, which should lead to circles
+        repricer_cost = 0.0,
+        base_mc = 1.0,
+        fine_grid_points = 200,
+        fine_grid_span = 4.0,
+        max_price = None  # Optional override for the maximum price in the grid.
+    )
+
+    sim_cfg_basic = SimulationConfig(
+        n_players=5,
+        outer_episodes=250_000,
         inner_periods=50,
-        carry_over_prices=True,
-        experiment_name="5_player_simplerule_tab_q_2_state_lastlowest_iflowest",
-        allowed_action_ids=(0, 1, 5, 9),
+        share_parameters=False,
+        allowed_action_ids=basic_action_ids,
+        verbose=True,
+        log_interval=20_000,
     )
 
-    experiment_n_player_market_composition(
-        scenarios=rho_sweep_scenarios,
-        default_n_players=5,
-        default_lambda=1.0,
-        default_marginal_costs=[2.0, 2.0, 2.0, 2.0, 2.0],
-        seeds=(0, 1, 2, 3, 4, 5),
-        outer_episodes=150_000,
+    sim_cfg_basic_no_static = SimulationConfig(
+        n_players=5,
+        outer_episodes=250_000,
         inner_periods=50,
-        carry_over_prices=True,
-        experiment_name="5_player_simplerule_reset_tab_q_2_state_lastlowest_iflowest",
-        allowed_action_ids=(0, 1, 3, 5, 7, 9, 11),
+        share_parameters=False,
+        allowed_action_ids=basic_action_no_static_ids,
+        verbose=True,
+        log_interval=20_000,
     )
+
+    sim_cfg_basic_reset = SimulationConfig(
+        n_players=5,
+        outer_episodes=250_000,
+        inner_periods=50,
+        share_parameters=False,
+        allowed_action_ids=basic_plus_reset_ids,
+        verbose=True,
+        log_interval=20_000,
+    )
+
+    sim_cfg_basic_no_static_plus_reset = SimulationConfig(
+        n_players=5,
+        outer_episodes=250_000,
+        inner_periods=50,
+        share_parameters=False,
+        allowed_action_ids=base_action_no_static_plus_reset_ids,
+        verbose=True,
+        log_interval=20_000,
+    )
+
+    sim_cfg_only_reset = SimulationConfig(
+        n_players=5,
+        outer_episodes=250_000,
+        inner_periods=50,
+        share_parameters=False,
+        allowed_action_ids=reset_action_only_ids,
+        verbose=True,
+        log_interval=20_000,
+    )
+
+    # ==============experiments==================
+
+    # # 3 sellers setting with basic actions only, mu=0.25
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="3_player_logit_tabq_base_mu_0.25_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic,
+    #     environment_config=env_cfg,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic-actions experiment saved to: {path_basic}")
+
+    # # 5 sellers setting with basic actions + no static, mu=0.25
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="5_player_logit_tabq_base_no_static_mu_0.25_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic_no_static,
+    #     environment_config=env_cfg,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic-actions experiment saved to: {path_basic}")
+
+
+    # # 5 sellers setting with basic actions + no static, mu=0.01
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="5_player_logit_tabq_base_no_static_mu_0.01_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic_no_static,
+    #     environment_config=env_cfg_mu_01,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic-actions experiment saved to: {path_basic}")
+
+
+    # # 3 sellers setting with basic actions + reset, mu=0.25
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="3_player_logit_tabq_base_reset_mu_0.25_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic_reset,
+    #     environment_config=env_cfg,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic+reset-actions experiment saved to: {path_basic}")
+
+    # # 3 sellers setting with basic actions + reset, mu=0.01
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="3_player_logit_tabq_base_reset_mu_0.01_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic_reset,
+    #     environment_config=env_cfg_mu_01,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic+reset-actions experiment saved to: {path_basic}")
+
+    # # 5 sellers setting with basic actions + no static + reset, mu=0.25
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="5_player_logit_tabq_base_no_static_reset_mu_0.25_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic_no_static_plus_reset,
+    #     environment_config=env_cfg,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic+reset-actions experiment saved to: {path_basic}")
+
+    # # 5 sellers setting with basic actions + no static + reset, mu=0.01
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="5_player_logit_tabq_base_no_static_reset_mu_0.01_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic_no_static_plus_reset,
+    #     environment_config=env_cfg_mu_01,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic+reset-actions experiment saved to: {path_basic}")
+
+
+    # # 5 sellers setting with basic actions + no static + reset, mu=0.005
+    # path_basic = experiment_n_player_logit(
+    #     experiment_name="5_player_logit_tabq_base_no_static_reset_mu_0.005_2_state_lastotherlowest_lastown",
+    #     simulation_config=sim_cfg_basic_no_static_plus_reset,
+    #     environment_config=env_cfg_mu_005,
+    #     seeds=(0, 1, 2, 3, 4),
+    #     max_workers=None,
+    # )
+    # print(f"Basic+reset-actions experiment saved to: {path_basic}")
+
+    # 5 sellers setting with undercut reset + above reset + match reset, mu=0.01
+    print(f"5 Player 1 state (last lowest) with actions:{reset_action_only_ids}")
+    path_basic = experiment_n_player_logit(
+        experiment_name="5_player_logit_tabq_no_static_baseresetonly_mu_0.01_1_state_lastlowest",
+        simulation_config=sim_cfg_only_reset,
+        environment_config=env_cfg_mu_01,
+        seeds=(0, 1, 2, 3, 4),
+        max_workers=None,
+    )
+    print(f"Basic+reset-actions experiment saved to: {path_basic}")
+
 
     end_time = time.time()
     print(

@@ -28,7 +28,7 @@ class NPlayerSimpleQLearningRuleAgent:
         epsilon_omega: float,
         time: int = 0,
         *,
-        price_grid: Optional[Sequence[float]] = None,
+        price_grid: Sequence[float],
         action_library: Optional[MetaActionLibrary] = None,
         allowed_action_ids: Optional[Sequence[int]] = None,
     ) -> None:
@@ -50,17 +50,13 @@ class NPlayerSimpleQLearningRuleAgent:
         if library_ids != list(range(self.action_dim)):
             raise ValueError(
                 "MetaActionLibrary must expose consecutive identifiers starting from 0"
-            )
+        )
 
         self._id_to_action = {action.action_id: action for action in library_actions}
-        if price_grid is None:
-            self.price_grid = None
-        else:
-            grid_arr = np.asarray(price_grid, dtype=np.float32).flatten()
-            if grid_arr.size == 0:
-                raise ValueError("price_grid must contain at least one value")
-            # unique to avoid duplicate grid points affecting snapping
-            self.price_grid = np.unique(grid_arr)
+        grid_arr = np.asarray(price_grid, dtype=np.float32).flatten()
+        if grid_arr.size == 0:
+            raise ValueError("price_grid must contain at least one value")
+        self.price_grid = grid_arr
         if allowed_action_ids is None:
             valid_ids = np.arange(self.action_dim, dtype=int)
         else:
@@ -88,16 +84,13 @@ class NPlayerSimpleQLearningRuleAgent:
     def _snap_to_grid(self, arr: np.ndarray) -> np.ndarray:
         """Snap a state vector to the closest values on the provided price grid."""
 
-        if self.price_grid is None:
-            return arr
-
         diff = np.abs(arr.reshape(-1, 1) - self.price_grid.reshape(1, -1))
         nearest_idx = np.argmin(diff, axis=1)
         snapped = self.price_grid[nearest_idx]
         return snapped.reshape(arr.shape)
 
     def _state_to_key(self, state: Sequence[float]) -> Tuple[float, ...]:
-        """Round and flatten the state so it can be used as a hashable key."""
+        """Map a state onto the nearest grid points and flatten to a hashable key."""
 
         arr = np.asarray(state, dtype=np.float32).flatten()
         if arr.size != self.state_dim:

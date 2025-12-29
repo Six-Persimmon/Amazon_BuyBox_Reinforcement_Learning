@@ -30,7 +30,7 @@ class NPlayerPoissonDemandEnv:
         price_max: float = 10.0,
         grid_size: int = 20,
         a0: float = 0.0,
-        a12: float = 10.0,
+        a12: float = 10.0, # 2025-12-03. This is too high and can envourage very high prices, so I built a new version.
         mu: float = 0.25,
         lam: float = 1.0,
         rho: float = 0.5, # proportion of sophisticated buyers
@@ -70,39 +70,56 @@ class NPlayerPoissonDemandEnv:
         denom = np.exp(self.a0 / self.mu) + np.sum(logits)
         return logits / denom
     
-    def _get_monopoly_price(self) -> float:
-        """Compute the monopoly price as if there were only one seller facing only sophisticated buyers."""
-        from scipy.optimize import minimize_scalar
-        
-        def monopoly_profit(p):
-            d = np.exp((self.a12 - p) / self.mu) / (np.exp((self.a12 - p) / self.mu) + np.exp(self.a0 / self.mu))
-            return (p - self.repricer_cost) * d
+    def monopoly_price_mixed(self, mc: float = 1.0) -> float:
+        prices = self.prices  # 同一个 grid
+        A = np.exp((self.a12 - prices) / self.mu)
+        C = np.exp(self.a0 / self.mu)
+        s_logit = A / (A + C)  # monopoly 下只有一个 seller 的 logit 份额
+        # 期望销量（忽略 lambda 常数）
+        q = self.rho * s_logit + (1.0 - self.rho) * 1.0
+        profits = (prices - mc) * q
+        return prices[np.argmax(profits)]
 
-        
-        result = minimize_scalar(lambda p: -monopoly_profit(p), 
-                               bounds=(self.price_min, self.price_max), 
-                               method='bounded')
-        return result.x
+    def profit_given_others_price(self, my_price, others_price, mc: float = 1.0):
+        prices = np.array([my_price] + [others_price] * (self.n_players - 1))
+        # logit share（只给各 seller 的）
+        shares_logit = self._logit_shares(prices)
+        # naive share allocation
+        min_price = prices.min()
+        tie_mask = np.isclose(prices, min_price)
+        tie_count = tie_mask.sum()
+        naive_share = np.zeros_like(prices, dtype=float)
+        naive_share[tie_mask] = 1.0 / tie_count
 
-    def _get_nash_equilibrium_price(self, mc: float=2.0) -> float:
-        """Calculate symmetric Nash equilibrium price for N players with same marginal cost facing only sophisticated buyers."""
-        from scipy.optimize import fsolve
-        
-        def nash_condition(p):
-            # For symmetric equilibrium, all players charge same price p
-            # First-order condition: derivative of profit w.r.t. own price = 0
-            
-            # Demand when all charge price p
-            deno = self.n_players * np.exp((self.a12 - p) / self.mu) + np.exp(self.a0 / self.mu)
-            d = np.exp((self.a12 - p) / self.mu) / deno
+        # 看 firm 0（就是我们）的份额
+        s_logit_0 = shares_logit[0]
+        s_naive_0 = naive_share[0]
 
-            # First-order condition:
-            foc = d - (p - mc) * np.exp(self.a0 / self.mu)
-            return foc
-        
-        # Solve for Nash equilibrium price
-        p_nash = fsolve(nash_condition, mc + 0.2)[0]
-        return max(self.price_min, min(self.price_max, p_nash))
+        # 期望销量（忽略 lambda）
+        q = self.rho * s_logit_0 + (1.0 - self.rho) * s_naive_0
+        return (my_price - mc) * q
+    
+    def nash_price_mixed_discrete(self, mc: float = 1.0):
+        prices = self.prices
+        n = len(prices)
+        best_response = np.empty(n, dtype=int)
+
+        for j, p_sym in enumerate(prices):
+            # 我方在 grid 上找最优
+            profits = [
+                self.profit_given_others_price(my_p, p_sym, mc=mc)
+                for my_p in prices
+            ]
+            best_idx = int(np.argmax(profits))
+            best_response[j] = best_idx
+
+        # 对称 Nash: 对称价 p_sym 的 index j 自己就是 best response
+        # 即 best_response[j] == j
+        candidates = np.where(best_response == np.arange(n))[0]
+        if candidates.size == 0:
+            return None  # 没有离散对称NE
+        # 如果有多个，挑一个，比如中间的
+        return prices[candidates[len(candidates)//2]]
 
     def run_episode(
         self,
@@ -220,3 +237,11 @@ class NPlayerPoissonDemandEnv:
 
 
 __all__ = ["NPlayerPoissonDemandEnv"]
+
+if __name__ == "__main__":
+    # show Nash equilibrium price for 5 players and monopoly price
+    env = NPlayerPoissonDemandEnv(n_players=5, a12=2.0)
+    nash_price = env.nash_price_mixed_discrete(mc=1.0)
+    monopoly_price = env.monopoly_price_mixed(mc=1.0)
+    print(f"Nash equilibrium price (5 players, mc=1.0): {nash_price:.4f}")
+    print(f"Monopoly price (mc=1.0): {monopoly_price:.4f}")
