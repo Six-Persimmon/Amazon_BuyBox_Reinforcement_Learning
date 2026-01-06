@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 import itertools
+import time
+from datetime import datetime
 
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent
@@ -13,16 +15,31 @@ from src.strategies import (
     ACT_UNDER_RESET, ACT_MATCH_RESET
 )
 
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds into H:MM:SS (with 1 decimal if < 60s)."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}"
+
 if __name__ == "__main__":
     
     # --- Experiment Parameter Sweep ---
     # Total combinations = 4 * 7 * 7 = 196 (per strategy set)
     
-    N_VALUES = [2, 3, 5, 10]
-    MU_VALUES = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]
-    K_VALUES = [1, 2, 4, 8, 10, 20, 50]
+    # # ---before Jan 4 2026----
+    # N_VALUES = [2, 3, 5, 10]
+    # MU_VALUES = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]
+    # K_VALUES = [1, 2, 4, 8, 10, 20, 50]
+    # ROUNDS_PER_CONFIG = 10
+
+    # ---Jan 4 2026----
+    N_VALUES = [2, 3, 5, 7, 10]
+    MU_VALUES = [0.01, 0.04, 0.07, 0.1, 0.13, 0.16, 0.19, 0.22, 0.25, 0.28, 0.31]
+    K_VALUES = [5, 10, 15, 20, 25, 30, 35, 40]
     
-    ROUNDS_PER_CONFIG = 10
+    ROUNDS_PER_CONFIG = 30
     
     # --- 定义两组实验的策略集 ---
     
@@ -44,6 +61,12 @@ if __name__ == "__main__":
     print(f"K: {K_VALUES}")
     print("-" * 50)
 
+    overall_start = time.perf_counter()
+    # 预先算总 batch 数，便于显示进度
+    combinations = list(itertools.product(MU_VALUES, K_VALUES))
+    total_batches = len(EXPERIMENT_SETS) * len(combinations)
+    batch_counter = 0
+
     # 遍历每一组策略设定 (3strats vs 4strats)
     for label, current_strats in EXPERIMENT_SETS.items():
         print(f"\n[[[ STARTING EXPERIMENT SET: {label} ({len(current_strats)} strategies) ]]]")
@@ -58,7 +81,9 @@ if __name__ == "__main__":
             exp_batch_name = f"scan_{label}_mu{mu_val}_k{k_val}"
             
             print(f"\n>>> Running Batch: {exp_batch_name}")
-            
+
+            batch_start = time.perf_counter()
+
             run_experiment_batch(
                 experiment_name=exp_batch_name,
                 mu=mu_val,
@@ -76,6 +101,15 @@ if __name__ == "__main__":
                 beta = 1e-5,
                 save_training_data=False 
             )
+            batch_elapsed = time.perf_counter() - batch_start
+            total_elapsed = time.perf_counter() - overall_start
+            print(f">>> Batch finished: {exp_batch_name} | elapsed {_fmt_duration(batch_elapsed)}")
+            print(f">>> Total elapsed so far: {_fmt_duration(total_elapsed)}")
+
 
     print("\n" + "="*50)
     print("All experiments completed.")
+    overall_elapsed = time.perf_counter() - overall_start
+    print("\n" + "=" * 50)
+    print(f"End time: {datetime.now().isoformat(timespec='seconds')}")
+    print(f"TOTAL TIME: {_fmt_duration(overall_elapsed)}")

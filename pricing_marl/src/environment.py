@@ -202,7 +202,7 @@ class PricingEnvironment:
                 avg_price_over_k = sum_avg_price / self.cfg.K
                 avg_lowest_over_k = sum_lowest_price / self.cfg.K
                 table[key] = (
-                    cum_profits / self.cfg.K,
+                    cum_profits / self.cfg.K, # shape: (num_sellers,)
                     min(current_indices),
                     avg_price_over_k,
                     avg_lowest_over_k
