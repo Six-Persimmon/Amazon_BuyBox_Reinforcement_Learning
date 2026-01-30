@@ -294,5 +294,13 @@ class PricingEnvironment:
         avg_lowest = np.mean(np.min(flat_prices, axis=1))
 
         return avg_profits, next_state_min, avg_price, avg_lowest, trajectory
-    
+
+# if __name__ == "__main__":
+#     N = 7
+#     a = 2
+#     c = 1
+#     mu = 0.1
+#     a0 = 0
+#     nash_p, mono_p = compute_nash_and_monopoly_static(num_sellers=N, a_val=a, mu=mu, a0=a0, c_val=c)
+#     print(nash_p, mono_p)
     

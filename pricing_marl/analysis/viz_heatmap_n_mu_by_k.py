@@ -6,6 +6,8 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap
+import time
+from datetime import datetime
 
 # Project Root
 project_root = Path(__file__).resolve().parent.parent
@@ -128,38 +130,34 @@ def compute_metrics_for_run(df, N):
         "avg_price": avg_price
     }, action_counts, total_count
 
-def draw_split_action_heatmap(ax, df_n, mu_values, k_values, valid_actions):
+def draw_split_action_heatmap(ax, df_k, mu_values, n_values, valid_actions):
     """
     自定义绘图函数：在 Grid 中绘制分割矩形
     """
     # 设置坐标轴
     ax.set_xlim(0, len(mu_values))
-    ax.set_ylim(0, len(k_values))
+    ax.set_ylim(0, len(n_values))
     
     # 标签
     ax.set_xticks(np.arange(len(mu_values)) + 0.5)
     ax.set_xticklabels(mu_values)
-    ax.set_yticks(np.arange(len(k_values)) + 0.5)
-    ax.set_yticklabels(k_values)
+    ax.set_yticks(np.arange(len(n_values)) + 0.5)
+    ax.set_yticklabels(n_values)
     ax.set_xlabel("mu")
-    ax.set_ylabel("K")
+    ax.set_ylabel("N")
     
-    # 反转 Y 轴让 K 从大到小排列 (和 Heatmap 保持一致)
-    # 注意：我们绘图是 row 从上到下，所以数据处理要注意
-    # 最简单的方法：Y轴 0 在底部，但 Heatmap 通常 0 在顶部。
-    # 我们这里手动控制：row 0 是 K_max。
-    
-    sorted_k = sorted(k_values, reverse=True) # Top row is max K
+    # 反转 Y 轴让 N 从大到小排列 (和 Heatmap 保持一致)
+    sorted_n = sorted(n_values, reverse=True) # Top row is max N
     
     # 遍历每个格子
-    for row_idx, k_val in enumerate(sorted_k):
+    for row_idx, n_val in enumerate(sorted_n):
         for col_idx, mu_val in enumerate(mu_values):
             
             # 获取该格子的数据
-            mask = (df_n['K'] == k_val) & (df_n['mu'] == mu_val)
+            mask = (df_k['N'] == n_val) & (df_k['mu'] == mu_val)
             if not mask.any(): continue
             
-            row_data = df_n[mask].iloc[0]
+            row_data = df_k[mask].iloc[0]
             
             # 提取 Shares
             shares = []
@@ -174,8 +172,8 @@ def draw_split_action_heatmap(ax, df_n, mu_values, k_values, valid_actions):
             
             # 坐标转换：Heatmap 的 row 0 在最上面
             # 在 Matplotlib 坐标系中，y=0 是底部。
-            # 所以 row_idx 0 (K=50) 应该画在 y = len(k) - 1 - row_idx
-            y_pos = len(k_values) - 1 - row_idx
+            # 所以 row_idx 0 (N_max) 应该画在 y = len(n) - 1 - row_idx
+            y_pos = len(n_values) - 1 - row_idx
             x_pos = col_idx
             
             # 1. 绘制 Top 1 矩形 (左侧)
@@ -221,13 +219,13 @@ def plot_heatmaps(df_summary):
     plt.rcParams.update({'font.size': 12})
     
     df_summary['Strategy_Set'] = df_summary['Experiment'].apply(
-        lambda x: "4 Strategies" if "4strats" in x else "3 Strategies"
+        lambda x: "4 Strategies" if "4strats" in x else "3 Strategies" # maybe need to be finer.
     )
     
-    unique_Ns = sorted(df_summary['N'].unique())
+    unique_Ks = sorted(df_summary['K'].unique())
     unique_Strats = df_summary['Strategy_Set'].unique()
 
-    fig_dir = project_root / "analysis" / "figures" / "heatmaps"
+    fig_dir = project_root / "analysis" / "figures" / "heatmaps_n_mu_by_k"
     fig_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving figures to {fig_dir} ...")
 
@@ -241,21 +239,22 @@ def plot_heatmaps(df_summary):
         else:
             valid_actions = [ACT_UNDERCUT, ACT_MATCH, ACT_ABOVE, ACT_UNDER_RESET] # 4 actions
 
-        for n in unique_Ns:
-            df_n = df_strat[df_strat['N'] == n]
-            if df_n.empty: continue
+        for k in unique_Ks:
+            df_k = df_strat[df_strat['K'] == k]
+            if df_k.empty: continue
             
             try:
-                pivot_delta = df_n.pivot(index="K", columns="mu", values="avg_delta").sort_index(ascending=False)
-                pivot_price = df_n.pivot(index="K", columns="mu", values="avg_price").sort_index(ascending=False)
-                pivot_std   = df_n.pivot(index="K", columns="mu", values="price_std").sort_index(ascending=False)
+                # Pivot by N instead of K
+                pivot_delta = df_k.pivot(index="N", columns="mu", values="avg_delta").sort_index(ascending=False)
+                pivot_price = df_k.pivot(index="N", columns="mu", values="avg_price").sort_index(ascending=False)
+                pivot_std   = df_k.pivot(index="N", columns="mu", values="price_std").sort_index(ascending=False)
                 
-                # 获取坐标轴刻度 (Sorted K for Y, Sorted Mu for X)
-                mu_values = sorted(df_n['mu'].unique())
-                k_values = sorted(df_n['K'].unique()) # Draw function handles reverse sort
+                # 获取坐标轴刻度 (Sorted N for Y, Sorted Mu for X)
+                mu_values = sorted(df_k['mu'].unique())
+                n_values = sorted(df_k['N'].unique())
                 
                 fig, axes = plt.subplots(2, 2, figsize=(22, 16))
-                fig.suptitle(f"N={n} Sellers | {strat_label}", fontsize=24, y=0.98)
+                fig.suptitle(f"K={k} Inner Periods Length | {strat_label}", fontsize=24, y=0.98)
                 
                 # 1. Delta
                 sns.heatmap(pivot_delta, annot=True, fmt=".2f", cmap="RdYlBu_r", ax=axes[0,0], vmin=0, vmax=1)
@@ -265,9 +264,9 @@ def plot_heatmaps(df_summary):
                 sns.heatmap(pivot_price, annot=True, fmt=".2f", cmap="viridis", ax=axes[0,1])
                 axes[0,1].set_title("2. Average Lowest Price")
 
-                # 3. Action Share (Split-Tile Plot) --- [NEW]
+                # 3. Action Share (Split-Tile Plot)
                 axes[1,0].set_title("3. Action Share (Top 2 Actions)")
-                draw_split_action_heatmap(axes[1,0], df_n, mu_values, k_values, valid_actions)
+                draw_split_action_heatmap(axes[1,0], df_k, mu_values, n_values, valid_actions)
 
                 # 4. Std
                 sns.heatmap(pivot_std, annot=True, fmt=".3f", cmap="magma", ax=axes[1,1])
@@ -276,21 +275,28 @@ def plot_heatmaps(df_summary):
                 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
                 
                 safe_label = "4strats" if "4 Strategies" in strat_label else "3strats"
-                save_path = fig_dir / f"heatmap_shares_{safe_label}_N{n}.png"
+                save_path = fig_dir / f"heatmap_shares_{safe_label}_K{k}.png"
                 plt.savefig(save_path, dpi=150)
                 plt.close()
                 count += 1
                 
             except Exception as e:
-                print(f"Error plotting N={n}: {e}")
+                print(f"Error plotting K={k}: {e}")
                 import traceback
                 traceback.print_exc()
 
     print(f"Done! Generated {count} heatmaps with Split-Tile Actions.")
 
 if __name__ == "__main__":
+    start_time = time.time()
+    print(f"Loading heatmap data...")
+    print(f"Start time: {datetime.now().isoformat(timespec='seconds')}")
     df = load_all_heatmap_data()
     if not df.empty:
         plot_heatmaps(df)
+        print("All heatmaps generated.")
     else:
         print("No data found.")
+    
+    elapsed = time.time() - start_time
+    print(f"Total elapsed time: {elapsed/60:.2f} minutes.")
