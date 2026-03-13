@@ -1,8 +1,11 @@
 import numpy as np
 import itertools
 import pickle
+import time
 from math import factorial
+from pathlib import Path
 from scipy.optimize import minimize
+from filelock import FileLock, Timeout
 from src.config import Config
 from src.strategies import get_strategy_function
 
@@ -95,6 +98,11 @@ class PricingEnvironment:
     def _build_grid(self):
         step = (self.p_monopoly - self.p_nash) / (self.cfg.num_grids - 3)
         price_grid = np.linspace(self.p_nash - step, self.p_monopoly + step, self.cfg.num_grids)
+        self.grid_min_before_floor = float(price_grid[0])
+        self.grid_floor_applied = bool(price_grid[0] < self.cfg.c_val)
+        if self.grid_floor_applied:
+            price_grid[0] = self.cfg.c_val
+        self.grid_min_after_floor = float(price_grid[0])
         # by construction, nash_idx is always 1, monopoly_idx is always num_grids - 2
         self.nash_idx = 1
         self.monopoly_idx = self.cfg.num_grids - 2
@@ -138,17 +146,34 @@ class PricingEnvironment:
             f"lookup_N{self.cfg.num_sellers}_G{self.cfg.num_grids}_"
             f"mu{self.cfg.mu}_a{self.cfg.a_val}_c{self.cfg.c_val}_a0{self.cfg.a0}_"
             f"xi{self.cfg.xi}_K{self.cfg.K}_"
-            f"strats{strats_str}_stateLow.pkl"  # <--- explicitly named e.g. strats0_1_3.pkl
+            f"strats{strats_str}_stateLow"
+            f"{'_floorC' if self.grid_floor_applied else ''}.pkl"  # <--- explicitly named e.g. strats0_1_3.pkl
         )
         file_path = self.cfg.lookup_dir / filename
 
-        if file_path.exists():
-            print(f"[Env] Loading cached table: {filename}")
-            with open(file_path, "rb") as f:
-                return pickle.load(f)
-        else:
-            print(f"[Env] Computing new table: {filename}...")
-            return self._compute_lookup_table(file_path)
+        lock_path = Path(f"{file_path}.lock")
+        lock = FileLock(lock_path)
+
+        lock_timeout = 3 * 60 * 60  # seconds (3 hours)
+        max_retries = 5
+        retry_backoff = 5   # seconds
+
+        for attempt in range(max_retries):
+            try:
+                with lock.acquire(timeout=lock_timeout):
+                    if file_path.exists():
+                        print(f"[Env] Loading cached table: {filename}")
+                        with open(file_path, "rb") as f:
+                            return pickle.load(f)
+
+                    print(f"[Env] Computing new table: {filename}...")
+                    return self._compute_lookup_table(file_path)
+            except Timeout:
+                if attempt == max_retries - 1:
+                    raise TimeoutError(
+                        f"Timeout waiting for lookup table lock after {lock_timeout}s"
+                    )
+                time.sleep(retry_backoff)
 
     def _compute_lookup_table(self, file_path):
         '''
@@ -208,8 +233,10 @@ class PricingEnvironment:
                     avg_lowest_over_k
                 )
 
-        with open(file_path, "wb") as f:
+        tmp_path = Path(f"{file_path}.tmp")
+        with open(tmp_path, "wb") as f:
             pickle.dump(table, f)
+        tmp_path.replace(file_path)
         return table
     
     def step(self, state_idx, actions_indices, return_details=False):

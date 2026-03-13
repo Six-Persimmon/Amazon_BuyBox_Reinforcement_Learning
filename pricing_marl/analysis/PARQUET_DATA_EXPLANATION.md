@@ -2,7 +2,15 @@
 
 ## 概述
 
-每个实验 run 的 parquet 文件包含了该次模拟在 **Evaluation Phase（评估阶段）** 的详细数据。数据以"原子时间步"（atomic time step）为单位记录，即每一个 K-period 内的每一个小步骤都会被记录。
+每个实验 run 目录里现在有两类 parquet：
+
+1. **Evaluation 数据**：`run_<id>.parquet`
+2. **Q-table 快照**：`run_<id>_qtable.parquet`
+
+本文主要解释 **Evaluation 数据**（`run_<id>.parquet`）。  
+分析脚本在批量读取时应只匹配 `run_<数字>.parquet`，避免把 qtable 文件混入。
+
+每个 `run_<id>.parquet` 包含该次模拟在 **Evaluation Phase（评估阶段）** 的详细数据。数据以"原子时间步"（atomic time step）为单位记录，即每一个 K-period 内的每一个小步骤都会被记录。
 
 ## 数据结构
 

@@ -6,7 +6,51 @@ from src.config import Config
 from src.environment import PricingEnvironment
 from src.agent import QAgent, calculate_heuristic_init_values
 
-def run_simulation(config: Config, run_id: int = 0, disable_tqdm: bool = False):
+def _build_q_snapshot_df(
+    agents,
+    config: Config,
+    run_id: int,
+    training_stop_episode: int,
+    snapshot_type: str,
+):
+    """Flatten all sellers' Q-tables into a tidy DataFrame."""
+    rows = []
+    for agent in agents:
+        seller_id = int(agent.id)
+        for state_idx in range(config.num_grids):
+            for action_idx in range(config.num_actions):
+                rows.append(
+                    {
+                        "run_id": int(run_id),
+                        "seller_id": seller_id,
+                        "state_idx": int(state_idx),
+                        "action_idx": int(action_idx),
+                        "action_id": int(config.active_strategies[action_idx]),
+                        "q_value": float(agent.Q[state_idx, action_idx]),
+                        "training_stop_episode": int(training_stop_episode),
+                        "qtable_type": snapshot_type,
+                    }
+                )
+
+    q_df = pd.DataFrame(rows)
+    if not q_df.empty:
+        q_df["run_id"] = q_df["run_id"].astype("int32")
+        q_df["seller_id"] = q_df["seller_id"].astype("int16")
+        q_df["state_idx"] = q_df["state_idx"].astype("int16")
+        q_df["action_idx"] = q_df["action_idx"].astype("int16")
+        q_df["action_id"] = q_df["action_id"].astype("int16")
+        q_df["training_stop_episode"] = q_df["training_stop_episode"].astype("int32")
+        q_df["q_value"] = q_df["q_value"].astype("float32")
+
+    return q_df
+
+
+def run_simulation(
+    config: Config,
+    run_id: int = 0,
+    disable_tqdm: bool = False,
+    return_q_snapshot: bool = False,
+):
     """
     Executes a single full simulation run.
     Two-Phase Simulation:
@@ -25,6 +69,17 @@ def run_simulation(config: Config, run_id: int = 0, disable_tqdm: bool = False):
     # 2. Initialize Agents (Heuristic Init)
     init_q = calculate_heuristic_init_values(env, config)
     agents = [QAgent(i, config, initial_Q_table=init_q) for i in range(config.num_sellers)]
+
+    q_snapshot_init_df = None
+    if return_q_snapshot:
+        # Capture true initialization snapshot before any training update.
+        q_snapshot_init_df = _build_q_snapshot_df(
+            agents=agents,
+            config=config,
+            run_id=run_id,
+            training_stop_episode=-1,
+            snapshot_type="init",
+        )
     
     # 3. Initial State (Random Start - single lowest price index for all sellers)
     state = int(np.random.randint(0, config.num_grids))
@@ -40,6 +95,8 @@ def run_simulation(config: Config, run_id: int = 0, disable_tqdm: bool = False):
     iterator = range(config.max_episodes)
     if not disable_tqdm:
         iterator = tqdm(iterator, desc=f"Run {run_id} [Train]")
+
+    training_stop_episode = -1
 
     for t in iterator:
         # 1. Get Actions
@@ -64,11 +121,15 @@ def run_simulation(config: Config, run_id: int = 0, disable_tqdm: bool = False):
             
         if policy_stable_counter >= config.converge_period:
             is_converged = True
+            training_stop_episode = int(t)
             if not disable_tqdm:
                 print(f"  Run {run_id}: Converged at episode {t}")
             break
             
         state = next_state
+
+    if training_stop_episode < 0:
+        training_stop_episode = int(t) if config.max_episodes > 0 else 0
 
     # --- PHASE 2: EVALUATION (H-Step) ---
     # 冻结 Agent (Epsilon=0, Learning=0)
@@ -91,6 +152,17 @@ def run_simulation(config: Config, run_id: int = 0, disable_tqdm: bool = False):
     
     # 确保 Eval 从当前 State 继续 (or we reset state, but it's ok to keep moving)
     
+    q_snapshot_df = None
+    if return_q_snapshot:
+        q_snapshot_final_df = _build_q_snapshot_df(
+            agents=agents,
+            config=config,
+            run_id=run_id,
+            training_stop_episode=training_stop_episode,
+            snapshot_type="final",
+        )
+        q_snapshot_df = pd.concat([q_snapshot_init_df, q_snapshot_final_df], ignore_index=True)
+
     for _ in range(num_eval_episodes):
         # 1. Greedy Actions
         # 强制 epsilon=0 (greedy)
@@ -123,7 +195,7 @@ def run_simulation(config: Config, run_id: int = 0, disable_tqdm: bool = False):
             record = {
                 "run_id": run_id,
                 "t_global": current_t_atomic,
-                "episode": t, # 属于哪个 outer episode
+                "episode": training_stop_episode, # Training 结束时的 outer episode
                 "step_in_k": k,
                 "price_min": min_p,
                 "price_mean": mean_p,
@@ -153,5 +225,6 @@ def run_simulation(config: Config, run_id: int = 0, disable_tqdm: bool = False):
     i_cols = df.select_dtypes(include=['int64']).columns
     df[i_cols] = df[i_cols].astype('int32')
 
+    if return_q_snapshot:
+        return df, q_snapshot_df
     return df
-

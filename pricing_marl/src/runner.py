@@ -20,9 +20,11 @@ def single_run_and_save(run_id, config, output_folder):
     """
     file_name = f"run_{run_id}.parquet"
     save_path = output_folder / file_name
+    q_table_file_name = f"run_{run_id}_qtable.parquet"
+    q_table_save_path = output_folder / q_table_file_name
     
-    # check if file exists
-    if save_path.exists():
+    # Skip only when both evaluation data and Q-table snapshot already exist.
+    if save_path.exists() and q_table_save_path.exists():
         # print(f"Run {run_id} exists. Skipping.") 
         return True
 
@@ -30,8 +32,14 @@ def single_run_and_save(run_id, config, output_folder):
         np.random.seed(run_id) 
         
         # disable_tqdm=True
-        df_eval = run_simulation(config, run_id=run_id, disable_tqdm=True)
-        df_eval.to_parquet(save_path, index=False, compression='snappy')
+        df_eval, q_table_snapshot = run_simulation(
+            config,
+            run_id=run_id,
+            disable_tqdm=True,
+            return_q_snapshot=True,
+        )
+        df_eval.to_parquet(save_path, index=False, compression="zstd")
+        q_table_snapshot.to_parquet(q_table_save_path, index=False, compression="zstd")
         return True
     except Exception as e:
         print(f"!!! Error in Run {run_id}: {e}")
@@ -41,7 +49,16 @@ def single_run_and_save(run_id, config, output_folder):
 # 1. Batch Controller
 # ==========================================
 
-def run_experiment_batch(experiment_name, mu, active_strategies, n_list, n_rounds, **kwargs):
+def run_experiment_batch(
+    experiment_name,
+    mu,
+    active_strategies,
+    n_list,
+    n_rounds,
+    n_jobs=None,
+    output_root=None,
+    **kwargs
+):
     """
     Args:
         experiment_name: 实验名称，用于生成文件夹
@@ -49,6 +66,7 @@ def run_experiment_batch(experiment_name, mu, active_strategies, n_list, n_round
         active_strategies: 策略 ID 列表
         n_list: 需要遍历的卖家数量列表 [2, 3, 5, 10]
         n_rounds: 每个设定跑多少个随机种子
+        output_root: 结果输出的根目录（可选）。如果提供，将写到 output_root/experiment_name
         **kwargs: 用于覆盖 Config 默认值的其他参数
     """
     print(f"\n{'='*60}")
@@ -57,7 +75,10 @@ def run_experiment_batch(experiment_name, mu, active_strategies, n_list, n_round
     print(f"Strategies: {active_strategies}")
     print(f"{'='*60}")
 
-    base_output_dir = Path(__file__).resolve().parent.parent / "data" / "results"/experiment_name
+    if output_root is None:
+        base_output_dir = Path(__file__).resolve().parent.parent / "data" / "results" / experiment_name
+    else:
+        base_output_dir = Path(output_root).expanduser().resolve() / experiment_name
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
     for n_sellers in n_list:
@@ -116,7 +137,7 @@ def run_experiment_batch(experiment_name, mu, active_strategies, n_list, n_round
         print(f"Step 2: Running {n_rounds} simulations in parallel...")
         t0_sim = time.time()
         
-        Parallel(n_jobs=-1, verbose=5)(
+        Parallel(n_jobs=n_jobs, verbose=5)(
             delayed(single_run_and_save)(seed, cfg, current_output_dir) 
             for seed in range(n_rounds)
         )
