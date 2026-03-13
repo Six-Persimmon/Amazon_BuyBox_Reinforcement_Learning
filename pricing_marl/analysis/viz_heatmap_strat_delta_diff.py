@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import re
 import pandas as pd
 import numpy as np
 import seaborn as sns
@@ -10,6 +11,16 @@ from datetime import datetime
 # Project Root
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
+
+EVAL_RUN_FILE_RE = re.compile(r"^run_\d+\.parquet$")
+
+
+def _list_eval_parquet_files(n_dir: Path):
+    return sorted(
+        p for p in n_dir.glob("run_*.parquet")
+        if EVAL_RUN_FILE_RE.match(p.name)
+    )
+
 
 def load_all_heatmap_data():
     results_dir = project_root / "data" / "results"
@@ -34,7 +45,7 @@ def load_all_heatmap_data():
             if not config_files: continue
             
             # Parquet Search
-            parquet_files = list(n_dir.glob("*.parquet"))
+            parquet_files = _list_eval_parquet_files(n_dir)
             if not parquet_files: continue
 
             try:
@@ -72,6 +83,7 @@ def load_all_heatmap_data():
 def plot_diff_heatmaps(df_summary):
     sns.set_context("talk")
     plt.rcParams.update({'font.size': 12})
+    df_summary = df_summary[~np.isclose(df_summary['mu'], 0.01)].copy()
     
     # Define Strategy Sets based on Experiment name
     # "4 Strategies" if "4strats" in x

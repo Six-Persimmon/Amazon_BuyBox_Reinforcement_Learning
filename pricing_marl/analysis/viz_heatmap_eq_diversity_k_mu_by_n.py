@@ -3,6 +3,7 @@ from pathlib import Path
 import time
 from datetime import datetime
 import json
+import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
@@ -18,6 +19,15 @@ sys.path.append(str(project_root))
 # Import environment utilities for grid computation
 from src.environment import compute_nash_and_monopoly_static
 
+EVAL_RUN_FILE_RE = re.compile(r"^run_\d+\.parquet$")
+
+
+def _list_eval_parquet_files(n_dir: Path):
+    return sorted(
+        p for p in n_dir.glob("run_*.parquet")
+        if EVAL_RUN_FILE_RE.match(p.name)
+    )
+
 
 def get_grid_index(price, price_grid):
     """Find the closest grid index for a given price."""
@@ -27,9 +37,9 @@ def get_grid_index(price, price_grid):
 def get_region(grid_idx):
     """
     Map grid index to region.
-    - 'H' (High): grids 8, 9
-    - 'L' (Low): grids 0, 1
-    - 'M' (Mid): grids 2-7
+    - 'H' (High): grids 7, 8, 9
+    - 'L' (Low): grids 0, 1, 2
+    - 'M' (Mid): grids 3-6
     """
     if grid_idx in [7, 8, 9]:
         return 'H'
@@ -45,6 +55,8 @@ def has_internal_cycle_in_K_period(prices_in_K, price_grid):
     
     A C-K exists if H region or L region is visited at least twice,
     with a "departure" (visiting a different region) in between.
+    Also, if both H and L are visited within the same K-period,
+    treat it as an internal cycle (crossing from L to H or H to L).
     
     Parameters:
     -----------
@@ -76,6 +88,11 @@ def has_internal_cycle_in_K_period(prices_in_K, price_grid):
         # Check if there's any non-L between t1 and t2
         if any(regions[t] != 'L' for t in range(t1 + 1, t2)):
             return True  # L region fold-back detected
+
+    # New rule: if both H and L are visited within the same K-period,
+    # consider it an internal cycle (crossing between extremes).
+    if h_indices and l_indices:
+        return True
     
     return False
 
@@ -88,8 +105,9 @@ def classify_equilibrium(df, price_grid, K, return_detailed=False):
     Layer 2 (K-1 endpoint analysis): Analyze states at end of each K-period
     
     Classification rules:
-    - 'H' (High): All K-1 endpoints in grids 8, 9; no internal cycle
-    - 'L' (Low): All K-1 endpoints in grids 0, 1; no internal cycle
+    - 'H' (High): All K-1 endpoints in grids 7-9; no internal cycle
+    - 'L' (Low): All K-1 endpoints in grids 0-2; no internal cycle
+    - 'M' (Mid): All K-1 endpoints in grids 3-6; no internal cycle
     - 'C' (Cycle): Either has internal cycle (C-K) or K-1 endpoints span both H and L (C-T)
     - 'O' (Other): Everything else (no internal cycle, endpoints don't fit H/L/C)
     
@@ -172,6 +190,9 @@ def classify_equilibrium(df, price_grid, K, return_detailed=False):
     elif has_low and not has_high and not has_mid:
         eq_type = 'L'
         subtype = None
+    elif has_mid and not has_high and not has_low:
+        eq_type = 'M'
+        subtype = None
     else:
         eq_type = 'O'
         subtype = None
@@ -193,9 +214,10 @@ def compute_price_grid(cfg):
     Returns:
     --------
     np.ndarray
-        Array of 10 grid prices
+        Price grid aligned with src/environment.py construction.
     """
     num_sellers = cfg['num_sellers']
+    num_grids = int(cfg.get('num_grids', 10))
     a_val = cfg['a_val']
     c_val = cfg['c_val']
     mu_val = cfg['mu']
@@ -210,9 +232,13 @@ def compute_price_grid(cfg):
         c_val=c_val
     )
     
-    # Build price grid (10 grids, Nash at index 1, Monopoly at index 8)
-    step = (p_monopoly - p_nash) / 7
-    price_grid = np.linspace(p_nash - step, p_monopoly + step, 10)
+    # Build price grid (old layout: one below Nash and one above Monopoly),
+    # then apply the same floor fix as environment.py:
+    # if lowest grid < marginal cost c, clamp it to c.
+    step = (p_monopoly - p_nash) / (num_grids - 3)
+    price_grid = np.linspace(p_nash - step, p_monopoly + step, num_grids)
+    if price_grid[0] < c_val:
+        price_grid[0] = c_val
     
     return price_grid
 
@@ -237,7 +263,7 @@ def _process_one_config(args):
     price_grid = compute_price_grid(cfg)
     
     # Load and classify all runs
-    parquet_files = list(n_dir.glob("*.parquet"))
+    parquet_files = _list_eval_parquet_files(n_dir)
     eq_types = []
     eq_subtypes = []
     
@@ -262,6 +288,7 @@ def _process_one_config(args):
         "K": K,
         "eq_diversity": diversity,
         "count_H": type_counts.get('H', 0),
+        "count_M": type_counts.get('M', 0),
         "count_L": type_counts.get('L', 0),
         "count_C": type_counts.get('C', 0),
         "count_O": type_counts.get('O', 0),
@@ -271,7 +298,7 @@ def _process_one_config(args):
     }
 
 
-def load_all_diversity_data(max_workers=8):
+def load_all_diversity_data(max_workers):
     """
     Load and classify all equilibria across all experiments (parallelized).
     
@@ -286,7 +313,7 @@ def load_all_diversity_data(max_workers=8):
         DataFrame with columns:
         - Experiment, N, mu, K
         - eq_diversity: number of distinct equilibrium types
-        - count_H, count_L, count_C, count_O: counts of each type
+        - count_H, count_M, count_L, count_C, count_O: counts of each type
         - count_CK, count_CT: detailed cycle counts
         - run_count: total number of runs
     """
@@ -351,20 +378,22 @@ def draw_split_eq_type_heatmap(ax, df_n, mu_values, k_values, split_cycle=False)
     if split_cycle:
         EQ_COLOR_MAP = {
             'H': '#2ecc71',   # Green - High/Collusive
+            'M': '#3498db',   # Blue - Mid
             'L': '#e74c3c',   # Red - Low/Competitive
             'C-K': '#e67e22', # Dark Orange - Cycle within K-period
             'C-T': '#f1c40f', # Yellow - Cycle across T-periods
             'O': '#95a5a6'    # Gray - Other
         }
-        eq_types_to_plot = ['H', 'L', 'C-K', 'C-T', 'O']
+        eq_types_to_plot = ['H', 'M', 'L', 'C-K', 'C-T', 'O']
     else:
         EQ_COLOR_MAP = {
             'H': '#2ecc71',  # Green - High/Collusive
+            'M': '#3498db',  # Blue - Mid
             'L': '#e74c3c',  # Red - Low/Competitive
             'C': '#f39c12',  # Orange - Cycle
             'O': '#95a5a6'   # Gray - Other
         }
-        eq_types_to_plot = ['H', 'L', 'C', 'O']
+        eq_types_to_plot = ['H', 'M', 'L', 'C', 'O']
     
     # Set up axis
     ax.set_xlim(0, len(mu_values))
@@ -394,11 +423,11 @@ def draw_split_eq_type_heatmap(ax, df_n, mu_values, k_values, split_cycle=False)
             if total_runs == 0:
                 continue
             
-            # Get counts for each type
+            # Get counts for each type in fixed left-to-right order
             type_shares = []
             if split_cycle:
                 # Use detailed C-K and C-T counts
-                for eq_type in ['H', 'L', 'C-K', 'C-T', 'O']:
+                for eq_type in ['H', 'M', 'L', 'C-K', 'C-T', 'O']:
                     if eq_type == 'C-K':
                         count = row_data.get('count_CK', 0)
                     elif eq_type == 'C-T':
@@ -410,14 +439,11 @@ def draw_split_eq_type_heatmap(ax, df_n, mu_values, k_values, split_cycle=False)
                         type_shares.append((eq_type, share, count))
             else:
                 # Use unified C count
-                for eq_type in ['H', 'L', 'C', 'O']:
+                for eq_type in ['H', 'M', 'L', 'C', 'O']:
                     count = row_data.get(f'count_{eq_type}', 0)
                     share = count / total_runs
                     if share > 0:
                         type_shares.append((eq_type, share, count))
-            
-            # Sort by share (descending)
-            type_shares.sort(key=lambda x: x[1], reverse=True)
             
             # Coordinate transformation
             y_pos = len(k_values) - 1 - row_idx
@@ -433,7 +459,8 @@ def draw_split_eq_type_heatmap(ax, df_n, mu_values, k_values, split_cycle=False)
                         facecolor=color, edgecolor='none'
                     )
                     ax.add_patch(rect)
-                    current_x += share
+                # Always advance to keep fixed order and proportions
+                current_x += share
             
             # Draw white border
             border = mpatches.Rectangle(
@@ -450,6 +477,7 @@ def draw_split_eq_type_heatmap(ax, df_n, mu_values, k_values, split_cycle=False)
     if split_cycle:
         patches = [
             mpatches.Patch(color='#2ecc71', label='H (High/Collusive)'),
+            mpatches.Patch(color='#3498db', label='M (Mid)'),
             mpatches.Patch(color='#e74c3c', label='L (Low/Competitive)'),
             mpatches.Patch(color='#e67e22', label='C-K (Cycle within K)'),
             mpatches.Patch(color='#f1c40f', label='C-T (Cycle across T)'),
@@ -458,6 +486,7 @@ def draw_split_eq_type_heatmap(ax, df_n, mu_values, k_values, split_cycle=False)
     else:
         patches = [
             mpatches.Patch(color='#2ecc71', label='H (High/Collusive)'),
+            mpatches.Patch(color='#3498db', label='M (Mid)'),
             mpatches.Patch(color='#e74c3c', label='L (Low/Competitive)'),
             mpatches.Patch(color='#f39c12', label='C (Cycle)'),
             mpatches.Patch(color='#95a5a6', label='O (Other)')
@@ -478,11 +507,12 @@ def plot_heatmaps(df_summary, split_cycle=False):
         If True, show C-K and C-T separately in the type distribution plot
     
     For each N and strategy set:
-    - Left subfigure: Heatmap of equilibrium diversity (1-4)
+    - Left subfigure: Heatmap of equilibrium diversity (1-5)
     - Right subfigure: Split-tile visualization of equilibrium type distribution
     """
     sns.set_context("talk")
     plt.rcParams.update({"font.size": 12})
+    df_summary = df_summary[~np.isclose(df_summary["mu"], 0.01)].copy()
 
     df_summary["Strategy_Set"] = df_summary["Experiment"].apply(
         lambda x: "4 Strategies" if "4strats" in x else "3 Strategies"
@@ -490,7 +520,7 @@ def plot_heatmaps(df_summary, split_cycle=False):
 
     unique_Ns = sorted(df_summary["N"].unique())
     unique_Strats = df_summary["Strategy_Set"].unique()
-    max_diversity = 4  # Maximum possible diversity with our classification
+    max_diversity = 5  # Maximum possible diversity with our classification
 
     fig_dir = project_root / "analysis" / "figures" / "heatmaps_eq_diversity_k_mu_by_n"
     fig_dir.mkdir(parents=True, exist_ok=True)
@@ -561,7 +591,7 @@ if __name__ == "__main__":
     print("Loading equilibrium diversity data...")
     print(f"Start time: {datetime.now().isoformat(timespec='seconds')}")
 
-    df = load_all_diversity_data()
+    df = load_all_diversity_data(max_workers=9)
     plot_heatmaps(df)
     print("All heatmaps generated.")
 

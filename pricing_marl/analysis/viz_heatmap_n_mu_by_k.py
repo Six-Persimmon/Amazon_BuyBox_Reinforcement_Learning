@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import re
 import pandas as pd
 import numpy as np
 import seaborn as sns
@@ -24,6 +25,14 @@ ACTION_COLOR_MAP = {
     ACT_MATCH_RESET: "#f1c40f"   # Yellow
 }
 MAX_ACTION_ID = 4
+EVAL_RUN_FILE_RE = re.compile(r"^run_\d+\.parquet$")
+
+
+def _list_eval_parquet_files(n_dir: Path):
+    return sorted(
+        p for p in n_dir.glob("run_*.parquet")
+        if EVAL_RUN_FILE_RE.match(p.name)
+    )
 
 def load_all_heatmap_data():
     results_dir = project_root / "data" / "results"
@@ -48,7 +57,7 @@ def load_all_heatmap_data():
             if not config_files: continue
             
             # Parquet Search
-            parquet_files = list(n_dir.glob("*.parquet"))
+            parquet_files = _list_eval_parquet_files(n_dir)
             if not parquet_files: continue
 
             try:
@@ -217,6 +226,7 @@ def draw_split_action_heatmap(ax, df_k, mu_values, n_values, valid_actions):
 def plot_heatmaps(df_summary):
     sns.set_context("talk")
     plt.rcParams.update({'font.size': 12})
+    df_summary = df_summary[~np.isclose(df_summary['mu'], 0.01)].copy()
     
     df_summary['Strategy_Set'] = df_summary['Experiment'].apply(
         lambda x: "4 Strategies" if "4strats" in x else "3 Strategies" # maybe need to be finer.
