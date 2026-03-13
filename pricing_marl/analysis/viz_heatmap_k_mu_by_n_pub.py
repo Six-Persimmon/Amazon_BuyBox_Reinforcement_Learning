@@ -1,0 +1,349 @@
+import sys
+from pathlib import Path
+import re
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import time
+from datetime import datetime
+
+# Project Root
+project_root = Path(__file__).resolve().parent.parent
+sys.path.append(str(project_root))
+
+from src.strategies import ID_TO_NAME, ACT_UNDERCUT, ACT_MATCH, ACT_ABOVE, ACT_UNDER_RESET
+
+# --- Global color map ---
+ACTION_COLOR_MAP = {
+    ACT_UNDERCUT: "#e74c3c",  # Red
+    ACT_MATCH: "#3498db",     # Blue
+    ACT_ABOVE: "#2ecc71",     # Green
+    ACT_UNDER_RESET: "#9b59b6"  # Purple
+}
+MAX_ACTION_ID = 4
+EVAL_RUN_FILE_RE = re.compile(r"^run_\d+\.parquet$")
+
+
+def _list_eval_parquet_files(n_dir: Path):
+    return sorted(
+        p for p in n_dir.glob("run_*.parquet")
+        if EVAL_RUN_FILE_RE.match(p.name)
+    )
+
+
+def load_all_heatmap_data():
+    results_dir = project_root / "data" / "results"
+    if not results_dir.exists():
+        print(f"ERROR: Directory {results_dir} does not exist!")
+        return pd.DataFrame()
+
+    summary_records = []
+    exp_dirs = sorted([d for d in results_dir.iterdir() if d.is_dir()])
+    print(f"Found {len(exp_dirs)} experiment folders. Scanning...")
+
+    for _, exp_dir in enumerate(exp_dirs):
+        n_dirs = sorted([d for d in exp_dir.iterdir() if d.is_dir() and d.name.startswith("N_")])
+        if not n_dirs:
+            continue
+
+        for n_dir in n_dirs:
+            # Config Search
+            config_files = list(n_dir.glob("Config_*.json"))
+            if not config_files:
+                candidate = exp_dir / f"Config_{n_dir.name}.json"
+                if candidate.exists():
+                    config_files = [candidate]
+            if not config_files:
+                continue
+
+            # Parquet Search
+            parquet_files = _list_eval_parquet_files(n_dir)
+            if not parquet_files:
+                continue
+
+            try:
+                import json
+
+                with open(config_files[0], "r") as f:
+                    cfg = json.load(f)
+
+                N = cfg.get("num_sellers")
+                mu = cfg.get("mu")
+                K = cfg.get("K")
+
+                # Count action shares across runs
+                action_counts_global = {aid: 0 for aid in range(MAX_ACTION_ID + 1)}
+                total_steps = 0
+
+                run_metrics = []
+                for pf in parquet_files:
+                    try:
+                        df = pd.read_parquet(pf)
+                        m, run_counts, run_len = compute_metrics_for_run(df)
+                        run_metrics.append(m)
+
+                        total_steps += run_len
+                        for aid, count in run_counts.items():
+                            action_counts_global[aid] += count
+                    except Exception:
+                        pass
+
+                if run_metrics:
+                    df_runs = pd.DataFrame(run_metrics)
+                    avg_metrics = df_runs.mean()
+
+                    # Action shares
+                    action_shares = {}
+                    if total_steps > 0:
+                        for aid, count in action_counts_global.items():
+                            action_shares[f"share_{aid}"] = count / total_steps
+                    else:
+                        for aid in range(MAX_ACTION_ID + 1):
+                            action_shares[f"share_{aid}"] = 0.0
+
+                    record = {
+                        "Experiment": exp_dir.name,
+                        "N": N,
+                        "mu": mu,
+                        "K": K,
+                        "avg_delta": avg_metrics["delta"],
+                        "price_std": avg_metrics["price_std"],
+                        "avg_price": avg_metrics["avg_price"],
+                        **action_shares,
+                    }
+                    summary_records.append(record)
+
+            except Exception as e:
+                print(f"  [ERROR] processing {n_dir.name}: {e}")
+
+    return pd.DataFrame(summary_records)
+
+
+def compute_metrics_for_run(df):
+    if df.empty:
+        return {}, {}, 0
+
+    avg_delta = df["delta"].mean()
+    price_seq = df["price_min"].values
+    avg_price = np.mean(price_seq)
+    price_std = np.std(price_seq)
+
+    # Action Counting
+    act_cols = [c for c in df.columns if c.startswith("a_")]
+    if not act_cols:
+        return {}, {}, 0
+
+    all_actions = df[act_cols].values.flatten()
+    all_actions = all_actions[~np.isnan(all_actions)]
+    total_count = len(all_actions)
+
+    unique, counts = np.unique(all_actions, return_counts=True)
+    action_counts = dict(zip(unique.astype(int), counts))
+
+    return {
+        "delta": avg_delta,
+        "price_std": price_std,
+        "avg_price": avg_price,
+    }, action_counts, total_count
+
+
+def draw_fixed_order_action_heatmap(ax, df_n, mu_values, k_values, valid_actions):
+    """
+    Draw split tiles with fixed action order left-to-right.
+    """
+    ax.set_xlim(0, len(mu_values))
+    ax.set_ylim(0, len(k_values))
+
+    ax.set_xticks(np.arange(len(mu_values)) + 0.5)
+    ax.set_xticklabels(mu_values)
+    ax.set_yticks(np.arange(len(k_values)) + 0.5)
+    ax.set_yticklabels(k_values)
+    ax.set_xlabel("$\\mu$")
+    ax.set_ylabel("K")
+    ax.tick_params(axis="x", labelsize=9)
+    ax.tick_params(axis="y", labelsize=9)
+
+    sorted_k = sorted(k_values, reverse=True)
+
+    for row_idx, k_val in enumerate(sorted_k):
+        for col_idx, mu_val in enumerate(mu_values):
+            mask = (df_n["K"] == k_val) & (df_n["mu"] == mu_val)
+            if not mask.any():
+                continue
+
+            row_data = df_n[mask].iloc[0]
+
+            y_pos = len(k_values) - 1 - row_idx
+            x_pos = col_idx
+
+            # Fixed order: undercut, match, above, undercut+reset
+            cursor = 0.0
+            for aid in valid_actions:
+                share = row_data.get(f"share_{aid}", 0.0)
+                if share <= 0:
+                    continue
+                color = ACTION_COLOR_MAP.get(aid, "gray")
+                rect = mpatches.Rectangle(
+                    (x_pos + cursor, y_pos), width=share, height=1,
+                    facecolor=color, edgecolor="none"
+                )
+                ax.add_patch(rect)
+                cursor += share
+
+            border = mpatches.Rectangle(
+                (x_pos, y_pos), 1, 1,
+                fill=False, edgecolor="white", linewidth=1
+            )
+            ax.add_patch(border)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    patches = []
+    for aid in valid_actions:
+        color = ACTION_COLOR_MAP.get(aid, "black")
+        label = f"{ID_TO_NAME.get(aid, str(aid))}"
+        patches.append(mpatches.Patch(color=color, label=label))
+
+    ax.legend(
+        handles=patches,
+        bbox_to_anchor=(0.5, -0.24),
+        loc="upper center",
+        ncol=len(valid_actions),
+        borderaxespad=0.0,
+        fontsize=10,
+        title="Rule Type",
+        title_fontsize=10,
+        frameon=False,
+    )
+
+
+def plot_heatmaps(df_summary):
+    sns.set_context("talk")
+    plt.rcParams.update({"font.size": 12})
+    df_summary = df_summary[~np.isclose(df_summary["mu"], 0.01)].copy()
+
+    df_summary["Strategy_Set"] = df_summary["Experiment"].apply(
+        lambda x: "4 Strategies" if "4strats" in x else "3 Strategies"
+    )
+
+    unique_Ns = sorted(df_summary["N"].unique())
+    unique_Strats = df_summary["Strategy_Set"].unique()
+
+    fig_dir = project_root / "analysis" / "figures" / "heatmaps_k_mu_by_n_pub"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Saving figures to {fig_dir} ...")
+
+    count = 0
+    for strat_label in unique_Strats:
+        df_strat = df_summary[df_summary["Strategy_Set"] == strat_label]
+
+        if "3 Strategies" in strat_label:
+            valid_actions = [ACT_UNDERCUT, ACT_MATCH, ACT_ABOVE]
+            rules_label = "3 Rules Set"
+        else:
+            valid_actions = [ACT_UNDERCUT, ACT_MATCH, ACT_ABOVE, ACT_UNDER_RESET]
+            rules_label = "4 Rules Set"
+
+        for n in unique_Ns:
+            df_n = df_strat[df_strat["N"] == n]
+            if df_n.empty:
+                continue
+
+            try:
+                pivot_delta = df_n.pivot(index="K", columns="mu", values="avg_delta").sort_index(ascending=False)
+                pivot_price = df_n.pivot(index="K", columns="mu", values="avg_price").sort_index(ascending=False)
+                pivot_std = df_n.pivot(index="K", columns="mu", values="price_std").sort_index(ascending=False)
+
+                mu_values = sorted(df_n["mu"].unique())
+                k_values = sorted(df_n["K"].unique())
+
+                safe_label = "4strats" if "4 Strategies" in strat_label else "3strats"
+
+                # 1) Collusion Index
+                fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+                sns.heatmap(pivot_delta, annot=True, fmt=".2f", cmap="RdYlBu_r", ax=ax, vmin=0, vmax=1)
+                ax.set_title(f"Normalized Profit Index: $\\Delta$ (N={n}, {rules_label})")
+                ax.set_xlabel("$\\mu$")
+                ax.set_ylabel("K")
+                save_path = fig_dir / f"heatmap_delta_{safe_label}_N{n}.png"
+                plt.tight_layout()
+                plt.savefig(save_path, dpi=150)
+                plt.close(fig)
+                count += 1
+
+                # 2) Avg Price
+                fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+                sns.heatmap(pivot_price, annot=True, fmt=".2f", cmap="viridis", ax=ax)
+                ax.set_title(f"Average Lowest Price (N={n}, {rules_label})")
+                ax.set_xlabel("$\\mu$")
+                ax.set_ylabel("K")
+                save_path = fig_dir / f"heatmap_avg_price_{safe_label}_N{n}.png"
+                plt.tight_layout()
+                plt.savefig(save_path, dpi=150)
+                plt.close(fig)
+                count += 1
+
+                # 3) Action Share
+                fig, ax = plt.subplots(1, 1, figsize=(10, 7))
+                ax.set_position([0.125, 0.14, 0.62, 0.74])
+                ax.set_title(f"Algorithmic Rule Share (N={n}, {rules_label})")
+                draw_fixed_order_action_heatmap(ax, df_n, mu_values, k_values, valid_actions)
+                legend = ax.get_legend()
+                if legend is not None:
+                    handles = legend.legend_handles
+                    labels = [t.get_text() for t in legend.get_texts()]
+                    legend.remove()
+                    ax.legend(
+                        handles=handles,
+                        labels=labels,
+                        bbox_to_anchor=(1.01, 1.0),
+                        loc="upper left",
+                        ncol=1,
+                        borderaxespad=0.0,
+                        fontsize=10,
+                        title="Rule Type",
+                        title_fontsize=10,
+                        frameon=False,
+                    )
+                save_path = fig_dir / f"heatmap_action_share_{safe_label}_N{n}.png"
+                plt.savefig(save_path, dpi=150)
+                plt.close(fig)
+                count += 1
+
+                # 4) Price Instability
+                fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+                sns.heatmap(pivot_std, annot=True, fmt=".2f", cmap="magma", ax=ax)
+                ax.set_title(f"Price Instability (Std Dev) (N={n}, {rules_label})")
+                ax.set_xlabel("$\\mu$")
+                ax.set_ylabel("K")
+                save_path = fig_dir / f"heatmap_price_std_{safe_label}_N{n}.png"
+                plt.tight_layout()
+                plt.savefig(save_path, dpi=150)
+                plt.close(fig)
+                count += 1
+
+            except Exception as e:
+                print(f"Error plotting N={n}: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+    print(f"Done! Generated {count} heatmaps (split into separate figures).")
+
+
+if __name__ == "__main__":
+    start_time = time.time()
+    print("Loading heatmap data...")
+    print(f"Start time: {datetime.now().isoformat(timespec='seconds')}")
+    df = load_all_heatmap_data()
+    if not df.empty:
+        plot_heatmaps(df)
+        print("All heatmaps generated.")
+    else:
+        print("No data found.")
+
+    elapsed = time.time() - start_time
+    print(f"Total elapsed time: {elapsed/60:.2f} minutes.")
