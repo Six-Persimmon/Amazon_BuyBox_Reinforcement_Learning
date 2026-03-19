@@ -392,3 +392,45 @@ Interpretation:
 * full completion across both strategy sets = `10000` paired runs
 
 ## 10. Decision: Go back to 2026_02_28 Data (eval_H = 10_000, Converge Criteria = 10_000)
+
+## 11. 2026-03-13 One-Shot Deviation Robustness Analysis for `result_K30_qtable`
+
+This update adds a batch analysis script for the new `K=30` rerun with qtable snapshots:
+* `analysis/count_nash_equilibrium_runs.py`
+
+Main purpose:
+* read all cases under `pricing_marl/data/result_K30_qtable`
+* for each parameter cell and each run, select `seller 0`
+* inject a one-shot deviation at the start of the post-reference horizon
+* test every non-best action available to that seller at the deviation state
+* aggregate how many runs satisfy the requested equilibrium/robustness criteria
+
+Current default window:
+* use the last `6` K-blocks of the evaluation trajectory
+* keep the first block as the pre-deviation reference block
+* simulate the following `5` K-blocks after deviation
+* compare deviation profit against the same `5`-block baseline horizon in the original run
+
+The script now records three run-level indicators:
+* **Nash Equilibrium**: for every tested deviation action of seller `0`, total profit over the post-deviation `5` K-block horizon is not higher than the same-horizon baseline profit (`same` or `lower` with tolerance).
+* **State Robust**: for every tested deviation action of seller `0`, the simulated path returns at least once to the pre-deviation state level within the post-deviation `5` K-block horizon.
+* **Robust Nash Equilibrium**: both conditions above hold simultaneously.
+
+CSV output:
+* written to `analysis/tables/nash_equilibrium_summary_result_K30_qtable.csv`
+* key columns include:
+  * `strategy_label`
+  * `N`
+  * `mu`
+  * `K`
+  * `num_runs`
+  * `num_NashEqu`
+  * `num_StateRobust`
+  * `num_RobustNashEqu`
+
+Related notebook update:
+* `analysis/tab_exp_res_pub.ipynb` now reads the CSV above
+* for the chosen baseline `(mu, K)`, it appends three rate columns to the final LaTeX table:
+  * `Nash Eq.`
+  * `State Robust`
+  * `Robust Nash Eq.`

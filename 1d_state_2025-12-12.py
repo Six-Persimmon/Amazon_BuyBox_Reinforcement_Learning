@@ -10,7 +10,7 @@ num_grids = 10
 T = 100
 gamma = 0.95
 # N_big_periods = 1000000
-N_big_periods = 1000000
+N_big_periods = 1000
 alpha = 0.15
 
 # CHANGE 1: Updated Beta as requested

@@ -206,10 +206,12 @@ def evaluate_deviation_run(
     if not deviation_action_indices:
         return {
             "is_nash_equilibrium": True,
-            "all_scenarios_returned": True,
-            "all_scenarios_profit_safe": True,
+            "is_state_robust": True,
+            "is_robust_nash_equilibrium": True,
             "num_scenarios": 0,
-            "num_scenarios_passed": 0,
+            "num_nash_scenarios": 0,
+            "num_state_robust_scenarios": 0,
+            "num_robust_nash_scenarios": 0,
         }
 
     scenario_results = []
@@ -218,7 +220,6 @@ def evaluate_deviation_run(
     for deviation_action_idx in deviation_action_indices:
         current_state_idx = pre_deviation_state_idx
         deviated_blocks = []
-        block_diagnostics = []
 
         for block_offset in range(post_deviation_blocks):
             chosen_actions = action_profile_for_state(
@@ -237,32 +238,11 @@ def evaluate_deviation_run(
             )
             block_df["block_offset"] = block_offset + 1
             deviated_blocks.append(block_df)
-
-            block_diagnostics.append(
-                {
-                    "block_offset": block_offset + 1,
-                    "start_state_idx": int(current_state_idx),
-                    "next_state_idx": int(next_state_idx),
-                }
-            )
             current_state_idx = next_state_idx
 
         deviation_df = pd.concat(deviated_blocks, ignore_index=True)
         state_returned_anytime = bool(np.isclose(deviation_df["price_min"].to_numpy(), pre_deviation_price).any())
-        state_never_left = bool(np.isclose(deviation_df["price_min"].to_numpy(), pre_deviation_price).all())
-
-        if state_never_left:
-            profit_horizon_steps = 0
-        else:
-            return_block_offset = None
-            for block in block_diagnostics[1:]:
-                if block["start_state_idx"] == pre_deviation_state_idx:
-                    return_block_offset = int(block["block_offset"])
-                    break
-            if return_block_offset is None:
-                profit_horizon_steps = len(deviation_df)
-            else:
-                profit_horizon_steps = (return_block_offset - 1) * config.K
+        profit_horizon_steps = len(deviation_df)
 
         deviation_profit = (
             float(deviation_df.iloc[:profit_horizon_steps][seller_profit_col].sum())
@@ -275,24 +255,32 @@ def evaluate_deviation_run(
             else 0.0
         )
         profit_result = compare_profit(deviation_profit, baseline_profit, profit_tolerance)
-        scenario_passed = state_returned_anytime and profit_result in {"same", "lower"}
+        is_nash_scenario = profit_result in {"same", "lower"}
+        is_state_robust_scenario = state_returned_anytime
+        is_robust_nash_scenario = is_nash_scenario and is_state_robust_scenario
 
         scenario_results.append(
             {
                 "deviation_action_idx": int(deviation_action_idx),
                 "state_returned_anytime": state_returned_anytime,
                 "profit_result": profit_result,
-                "scenario_passed": scenario_passed,
+                "is_nash_scenario": is_nash_scenario,
+                "is_state_robust_scenario": is_state_robust_scenario,
+                "is_robust_nash_scenario": is_robust_nash_scenario,
             }
         )
 
-    num_scenarios_passed = int(sum(int(row["scenario_passed"]) for row in scenario_results))
+    num_nash_scenarios = int(sum(int(row["is_nash_scenario"]) for row in scenario_results))
+    num_state_robust_scenarios = int(sum(int(row["is_state_robust_scenario"]) for row in scenario_results))
+    num_robust_nash_scenarios = int(sum(int(row["is_robust_nash_scenario"]) for row in scenario_results))
     return {
-        "is_nash_equilibrium": num_scenarios_passed == len(scenario_results),
-        "all_scenarios_returned": all(bool(row["state_returned_anytime"]) for row in scenario_results),
-        "all_scenarios_profit_safe": all(row["profit_result"] in {"same", "lower"} for row in scenario_results),
+        "is_nash_equilibrium": num_nash_scenarios == len(scenario_results),
+        "is_state_robust": num_state_robust_scenarios == len(scenario_results),
+        "is_robust_nash_equilibrium": num_robust_nash_scenarios == len(scenario_results),
         "num_scenarios": len(scenario_results),
-        "num_scenarios_passed": num_scenarios_passed,
+        "num_nash_scenarios": num_nash_scenarios,
+        "num_state_robust_scenarios": num_state_robust_scenarios,
+        "num_robust_nash_scenarios": num_robust_nash_scenarios,
     }
 
 
@@ -380,7 +368,7 @@ def discover_run_tasks(results_root: Path) -> list[RunTask]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Count how many runs satisfy the one-shot deviation Nash-equilibrium check."
+        description="Count Nash-equilibrium, state-robustness, and robust-Nash runs under one-shot deviations."
     )
     parser.add_argument(
         "--results-dir-name",
@@ -407,13 +395,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reference-window-blocks",
         type=int,
-        default=5,
+        default=6,
         help="How many trailing K-blocks to use from the evaluation trajectory.",
     )
     parser.add_argument(
         "--post-deviation-blocks",
         type=int,
-        default=4,
+        default=5,
         help="How many K-blocks to simulate after the injected deviation.",
     )
     parser.add_argument(
@@ -473,6 +461,8 @@ def main() -> None:
         .agg(
             num_runs=("run_id", "count"),
             num_NashEqu=("is_nash_equilibrium", "sum"),
+            num_StateRobust=("is_state_robust", "sum"),
+            num_RobustNashEqu=("is_robust_nash_equilibrium", "sum"),
         )
         .sort_values(["strategy_label", "mu", "K", "N"], ascending=[True, True, True, True])
         .reset_index(drop=True)
