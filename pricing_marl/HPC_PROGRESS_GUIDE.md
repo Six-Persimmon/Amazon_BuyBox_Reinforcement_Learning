@@ -356,8 +356,25 @@ rsync -av --progress --partial \
 * 因此这里统一使用：
   * `--progress`：显示每个文件的传输进度
   * `--partial`：如果下载中断，可以续传
+* 这次新实验的数据在 `data/result_K30_qtable`，不是老的 `data/results`。
+* 如果本地已经有同名目录，建议先改名备份，再下载新的结果。
 
 如果下载过程中再次出现“传一阵后卡住”的情况，优先做法仍然是把服务器端目录先打成一个 `.tar`，再下载单个大文件。
+
+服务器端打包示例：
+
+```bash
+cd ~/bigdata/pricing_marl/data
+tar -cf result_K30_qtable_2026_03_12.tar result_K30_qtable
+```
+
+本地下载单个 tar 文件：
+
+```bash
+rsync -av --progress --partial \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/data/result_K30_qtable_2026_03_12.tar \
+  /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/
+```
 
 ### Step 6. 本地验证
 推荐先抽样查看：
