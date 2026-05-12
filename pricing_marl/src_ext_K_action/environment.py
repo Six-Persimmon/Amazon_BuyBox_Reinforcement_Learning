@@ -232,6 +232,7 @@ class BaseKLookupEnvironment:
         return self._simulate_base_k_steps_detailed(state_idx, rule_action_indices)
 
     def _simulate_base_k_steps_detailed(self, start_idx, rule_action_indices):
+        # only used for return_details=True. Real price trajectories, which are not stored in the lookup table, are generated here for debugging and visualization purposes.
         current_indices = [start_idx] * self.cfg.num_sellers
         current_funcs = [
             get_strategy_function(self.cfg.active_strategies[action_idx])

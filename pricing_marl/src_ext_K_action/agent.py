@@ -31,6 +31,7 @@ def calculate_composite_heuristic_init_values(env, config: KActionConfig):
     """
     Broadcast rule-level heuristic Q values to all composite actions sharing a rule.
     This keeps initialization neutral over K choices.
+    First, calculate (G, Rule_Action) heuristic values, then broadcast to ( G, Rule_action X K_choice ) according to the action_map.
     """
     rule_q = calculate_rule_heuristic_init_values(env, config)
     composite_q = np.zeros((config.num_grids, config.num_actions))
@@ -47,6 +48,7 @@ class KActionQAgent:
         self.cfg = config
 
         if initial_Q_table is not None:
+            # each row is a state, each column is a composite action in the form of (rule_action_idx, k_choice)
             self.Q = np.copy(initial_Q_table)
         else:
             self.Q = np.zeros((config.num_grids, config.num_actions))

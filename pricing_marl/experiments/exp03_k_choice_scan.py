@@ -69,9 +69,9 @@ if __name__ == "__main__":
 
     BASE_K = int(os.getenv("PRICING_MARL_EXP03_BASE_K", "10"))
     K_CHOICES = [10, 30, 60]
-    ROUNDS_PER_CONFIG = 100
+    ROUNDS_PER_CONFIG = 30
     MAX_EPISODES = int(os.getenv("PRICING_MARL_EXP03_MAX_EPISODES", "2000000"))
-    CONVERGE_PERIOD = int(os.getenv("PRICING_MARL_EXP03_CONVERGE_PERIOD", "100000"))
+    CONVERGE_PERIOD = int(os.getenv("PRICING_MARL_EXP03_CONVERGE_PERIOD", "10000"))
     EVAL_H = int(os.getenv("PRICING_MARL_EXP03_EVAL_H", "2000"))
 
     n_filter = _parse_csv_env("PRICING_MARL_EXP03_FILTER_N", int)

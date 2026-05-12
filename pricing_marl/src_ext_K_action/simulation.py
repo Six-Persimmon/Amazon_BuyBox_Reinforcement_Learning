@@ -124,7 +124,7 @@ def run_simulation(
         last_t = int(t_block)
 
         for i, agent in enumerate(agents):
-            if remaining_blocks[i] <= 0:
+            if remaining_blocks[i] <= 0: # an agent can only update and choose a new action when its previous action's duration (how many K blocks) has elapsed
                 action_idx, meta = _select_new_action(
                     agent=agent,
                     state=state,
@@ -279,10 +279,10 @@ def _run_evaluation(
             record = {
                 "run_id": int(run_id),
                 "t_global": int(current_t_atomic),
-                "episode": int(training_stop_tick),
-                "base_block": int(base_block),
-                "step_in_k": int(step_in_base_k),
-                "step_in_base_K": int(step_in_base_k),
+                "episode": int(training_stop_tick), # num base blocks until convergence (or end of training if not converged)
+                "base_block": int(base_block), # index of base block in evaluation phase. Value from 0 to num_eval_blocks-1
+                "step_in_k": int(step_in_base_k),# if base block is K = 10, then step_in_k goes from 0 to 9
+                "step_in_base_K": int(step_in_base_k), # same as above, just for clearer naming in the dataframe
                 "price_min": min_p,
                 "price_mean": mean_p,
                 "delta": float(delta),

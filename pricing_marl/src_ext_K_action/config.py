@@ -46,12 +46,12 @@ class KActionConfig:
     # Reinforcement learning
     alpha: float = 0.15
     gamma: float = 0.95
-    max_episodes: int = 5_000_000
+    max_episodes: int = 2_000_000
     beta: Optional[float] = None
-    converge_period: int = 100_000
+    converge_period: int = 10_000
 
     # Evaluation
-    eval_H: int = 20_000
+    eval_H: int = 2_000
     save_training_data: bool = False
 
     # Paths

@@ -1,5 +1,9 @@
 # HPC Progress Guide (SCRC / Slurm)
 
+[TOC]
+
+
+
 This is a quick reference for logging in, checking job status, monitoring progress, and downloading results for `pricing_marl`.
 
 **Login**
@@ -258,6 +262,7 @@ unset PRICING_MARL_FILTER_K
 unset PRICING_MARL_EXPERIMENT_SET
 
 sbatch heatmap.sbatch
+```
 
 ## 2026-03-12 K=30 + Q-table 重跑清单（恢复 10,000 convergence）
 
@@ -385,7 +390,6 @@ rsync -av --progress --partial \
 * `run_<id>_qtable.parquet` 是否包含 `init` 和 `final`
 * 每个 seller 是否都有两张表
 * `init` 与 `final` 是否不再完全相同
-```
 
 ### Step 5. 监控任务（支持 eval + qtable 双进度）
 
@@ -448,3 +452,288 @@ python progress_report.py --rounds 100 --grid-file experiments/exp02_heatmap_sca
 重点确认：
 * `eval progress`、`qtable progress`、`paired progress` 都应接近或达到 `100%`
 * 最近文件列表里能看到 `run_*_qtable.parquet`
+
+## 2026-05-12 Exp03 endogenous-K scan on turing
+
+目标：运行 `experiments/exp03_k_choice_scan.py`，让 seller 在训练中内生选择复合动作 `(pricing rule, K choice)`。结果写入新的 `data/results_exp03`，不覆盖 exp02 的 `data/results`。
+
+本节使用：
+* `exp03_k_choice_turingvm.sbatch`
+* `exp03_progress_report.py`
+* `experiments/exp03_k_choice_scan.py`
+* `src_ext_K_action/`
+
+### 当前实验参数
+
+当前默认参数来自 `experiments/exp03_k_choice_scan.py` 和 `exp03_k_choice_turingvm.sbatch`：
+
+* `N_VALUES = [3]`
+* `MU_VALUES = [0.04, 0.07, 0.1, 0.13, 0.16, 0.19, 0.22, 0.25, 0.28, 0.31]`
+* `BASE_K = 10`
+* `K_CHOICES = [10, 30, 60]`
+* `ROUNDS_PER_CONFIG = 30`
+* `MAX_EPISODES = 2_000_000`
+* `CONVERGE_PERIOD = 10_000`
+* `EVAL_H = 2_000`
+* `beta = 1e-5`
+* `save_training_data = False`
+* strategy sets:
+  * `3strats = [undercut, match, above]`
+  * `4strats = [undercut, match, above, undercut+reset]`
+
+输出目录结构：
+
+```text
+data/results_exp03/
+  scan_kchoice_3strats_mu0.04_K10-30-60/N_3/run_0.parquet
+  scan_kchoice_3strats_mu0.04_K10-30-60/N_3/run_0_qtable.parquet
+  scan_kchoice_4strats_mu0.04_K10-30-60/N_3/run_0.parquet
+  ...
+```
+
+默认总规模：
+
+* 每个 strategy set: `1 N * 10 mu * 30 rounds = 300` runs
+* 两个 strategy sets 合计: `600` runs
+* 每个 run 产出 eval 和 qtable 两个 parquet 文件
+
+### 参数在哪里改
+
+最稳妥的方式是在提交任务前用环境变量改，不需要编辑 Python：
+
+```bash
+export PRICING_MARL_EXP03_FILTER_N="3"
+export PRICING_MARL_EXP03_FILTER_MU="0.04,0.07"
+export PRICING_MARL_EXP03_FILTER_K="10,30,60"
+export PRICING_MARL_EXP03_EXPERIMENT_SET="4strats"
+export PRICING_MARL_EXP03_ROUNDS_PER_CONFIG="10"
+export PRICING_MARL_EXP03_MAX_EPISODES="200000"
+export PRICING_MARL_EXP03_CONVERGE_PERIOD="10000"
+export PRICING_MARL_EXP03_EVAL_H="2000"
+```
+
+常用调整：
+
+* 只跑一个策略集：`PRICING_MARL_EXP03_EXPERIMENT_SET="3strats"` 或 `"4strats"`
+* 只跑部分 `mu`：`PRICING_MARL_EXP03_FILTER_MU="0.04,0.1"`
+* 只跑部分 K choices：`PRICING_MARL_EXP03_FILTER_K="10,30"`，要求每个 K 都是 `BASE_K` 的整数倍
+* 小规模 smoke test：`PRICING_MARL_EXP03_ROUNDS_PER_CONFIG="2"`，再配合少量 `mu`
+* 改输出目录：`PRICING_MARL_EXP03_RESULTS_DIR="$HOME/bigdata/pricing_marl/data/results_exp03_test"`
+
+如果要永久修改默认网格，再编辑：
+
+```text
+pricing_marl/experiments/exp03_k_choice_scan.py
+```
+
+如果要改动作空间、学习率、折扣因子、经济参数或默认路径，再编辑：
+
+```text
+pricing_marl/src_ext_K_action/config.py
+```
+
+### Step 0. 本地同步 exp03 代码到服务器
+
+在本地机器执行：
+
+```bash
+cd /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning
+
+rsync -av pricing_marl/experiments/exp03_k_choice_scan.py \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/experiments/exp03_k_choice_scan.py
+
+rsync -av pricing_marl/src_ext_K_action/ \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/src_ext_K_action/
+
+rsync -av pricing_marl/exp03_k_choice_turingvm.sbatch \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/exp03_k_choice_turingvm.sbatch
+
+rsync -av pricing_marl/exp03_progress_report.py \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/exp03_progress_report.py
+
+rsync -av pricing_marl/HPC_PROGRESS_GUIDE.md \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/HPC_PROGRESS_GUIDE.md
+```
+
+说明：这里不会上传 `data/results` 或 `data/results_exp03`，避免把本地大结果传到服务器。
+
+### Step 1. 登录服务器并进入项目目录
+
+```bash
+ssh sl9818@rnd.scrc.nyu.edu
+cd ~/bigdata/pricing_marl
+```
+
+### Step 2. 可选：先做一个小规模 smoke test
+
+推荐先跑 `4strats`、一个 `mu`、2 个随机种子，确认环境和输出都正常。
+
+```bash
+cd ~/bigdata/pricing_marl
+
+export PRICING_MARL_EXP03_FILTER_N="3"
+export PRICING_MARL_EXP03_FILTER_MU="0.04"
+export PRICING_MARL_EXP03_FILTER_K="10,30,60"
+export PRICING_MARL_EXP03_EXPERIMENT_SET="4strats"
+export PRICING_MARL_EXP03_ROUNDS_PER_CONFIG="2"
+export PRICING_MARL_EXP03_RESULTS_DIR="$HOME/bigdata/pricing_marl/data/results_exp03_smoke"
+
+sbatch exp03_k_choice_turingvm.sbatch
+```
+
+查看：
+
+```bash
+squeue -u $USER
+tail -f exp03_kchoice_<jobid>.out
+```
+
+smoke test 完成后检查：
+
+```bash
+python exp03_progress_report.py \
+  --root ~/bigdata/pricing_marl/data/results_exp03_smoke \
+  --rounds 2 \
+  --n-values 3 \
+  --mu-values 0.04 \
+  --k-values 10,30,60 \
+  --experiment-set 4strats \
+  --recent 20
+```
+
+### Step 3. 提交完整 exp03
+
+完整运行前清掉 smoke test 的环境变量，避免继承筛选条件：
+
+```bash
+cd ~/bigdata/pricing_marl
+
+unset PRICING_MARL_EXP03_FILTER_N
+unset PRICING_MARL_EXP03_FILTER_MU
+unset PRICING_MARL_EXP03_FILTER_K
+unset PRICING_MARL_EXP03_EXPERIMENT_SET
+unset PRICING_MARL_EXP03_ROUNDS_PER_CONFIG
+unset PRICING_MARL_EXP03_RESULTS_DIR
+
+sbatch exp03_k_choice_turingvm.sbatch
+```
+
+提交后记下返回的 job id。
+
+### Step 4. 查看队列、日志和资源使用
+
+```bash
+squeue -u $USER
+scontrol show job <jobid> | grep -E 'StdOut|WorkDir|State|StartTime'
+tail -f exp03_kchoice_<jobid>.out
+```
+
+如果任务已经开始运行，可看 batch step 的 CPU 和内存：
+
+```bash
+sstat -j <jobid>.batch --format=AveCPU,AveRSS,MaxRSS
+```
+
+如果任务结束了：
+
+```bash
+sacct -j <jobid> --format=JobID,State,Elapsed,ExitCode
+```
+
+`State` 应该是 `COMPLETED`，`ExitCode` 应该是 `0:0`。
+
+### Step 5. 用 exp03_progress_report.py 看完成度
+
+完整 exp03 默认检查：
+
+```bash
+cd ~/bigdata/pricing_marl
+python exp03_progress_report.py \
+  --rounds 30 \
+  --grid-file experiments/exp03_k_choice_scan.py \
+  --recent 20
+```
+
+只看最新 qtable：
+
+```bash
+python exp03_progress_report.py \
+  --rounds 30 \
+  --grid-file experiments/exp03_k_choice_scan.py \
+  --recent 20 \
+  --recent-kind qtable
+```
+
+快速 shell 计数：
+
+```bash
+find ~/bigdata/pricing_marl/data/results_exp03 -type f -name "run_*.parquet" ! -name "run_*_qtable.parquet" | wc -l
+find ~/bigdata/pricing_marl/data/results_exp03 -type f -name "run_*_qtable.parquet" | wc -l
+```
+
+完整默认实验完成时，eval 文件数和 qtable 文件数都应接近或达到 `600`。更严格地看 `exp03_progress_report.py` 里的 `paired progress`，因为一个 run 只有 eval 和 qtable 都存在才算完整。
+
+### Step 6. 继续或重跑
+
+直接重新提交同一个 sbatch 即可：
+
+```bash
+cd ~/bigdata/pricing_marl
+sbatch exp03_k_choice_turingvm.sbatch
+```
+
+`runner.py` 会跳过已经同时存在 `run_<id>.parquet` 和 `run_<id>_qtable.parquet` 的 run，因此可以断点续跑。
+
+如果你改了训练逻辑、evaluation 逻辑或参数，并希望强制重跑，先备份或清空目标结果目录：
+
+```bash
+cd ~/bigdata/pricing_marl
+mv data/results_exp03 data/results_exp03_backup_$(date +%Y_%m_%d)
+mkdir -p data/results_exp03
+```
+
+不要删除 `data/lookup_tables`，除非你明确改了 lookup table 的定义、价格 grid、策略函数或经济参数。exp03 使用 `base_K` lookup table，缓存文件在 `data/lookup_tables`。
+
+### Step 7. 下载结果到本地
+
+在本地机器执行：
+
+```bash
+rsync -av --progress --partial \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp03/ \
+  /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/results_exp03/
+```
+
+如果文件太多导致传输不稳定，可以先在服务器打包：
+
+```bash
+ssh sl9818@rnd.scrc.nyu.edu
+cd ~/bigdata/pricing_marl/data
+tar -cf results_exp03_$(date +%Y_%m_%d).tar results_exp03
+exit
+```
+
+然后在本地下载单个 tar：
+
+```bash
+rsync -av --progress --partial \
+  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp03_*.tar \
+  /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/
+```
+
+### Step 8. 本地验收
+
+```bash
+cd /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl
+python exp03_progress_report.py \
+  --root data/results_exp03 \
+  --rounds 30 \
+  --grid-file experiments/exp03_k_choice_scan.py \
+  --recent 20
+```
+
+重点确认：
+
+* `paired progress` 对 `3strats` 和 `4strats` 都接近或达到 `100%`
+* 最近文件列表里同时能看到 `run_*.parquet` 和 `run_*_qtable.parquet`
+* 目录名形如 `scan_kchoice_4strats_mu0.25_K10-30-60/N_3`

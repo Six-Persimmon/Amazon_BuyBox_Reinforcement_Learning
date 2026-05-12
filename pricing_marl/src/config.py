@@ -37,13 +37,13 @@ class Config:
     beta: Optional[float] = None 
     
     # Convergence Threshold. Number of consecutive periods with unchanged policy.
-    converge_period: int = 100_000
+    converge_period: int = 10_000
 
     # --- Lookup Table ---
     K: int = 50
 
     # --- Evaluation Phase Parameters ---
-    eval_H : int = 20_000
+    eval_H : int = 2_000
 
     # --- whether to save training data. If False, only save Evaluation ---
     save_training_data: bool = False
