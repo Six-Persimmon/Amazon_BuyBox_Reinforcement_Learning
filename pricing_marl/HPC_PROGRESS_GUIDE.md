@@ -5,9 +5,10 @@
 
 
 This is a quick reference for logging in, checking job status, monitoring progress, and downloading results for `pricing_marl`.
+The current SCRC login host is `login.scrc.nyu.edu`. Older dated sections below retain historical `rnd.scrc.nyu.edu` commands only to document past reruns.
 
 **Login**
-1. `ssh sl9818@rnd.scrc.nyu.edu`
+1. `ssh sl9818@login.scrc.nyu.edu`
 
 **Go To Project**
 1. `cd ~/bigdata/pricing_marl`
@@ -31,7 +32,7 @@ This is a quick reference for logging in, checking job status, monitoring progre
 4. Auto-refresh eval count: `watch -n 30 "find ~/bigdata/pricing_marl/data/results -type f -name 'run_*.parquet' ! -name 'run_*_qtable.parquet' | wc -l"`
 
 **Progress Report Script (recommended)**
-1. Upload from your Mac: `rsync -av pricing_marl/progress_report.py sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/`
+1. Upload from your Mac: `rsync -av pricing_marl/progress_report.py sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/`
 2. Run on server: `cd ~/bigdata/pricing_marl && python progress_report.py --rounds 100`
 3. Optional: `python progress_report.py --rounds 100 --recent 20`
 4. Optional (use true grid sizes): `python progress_report.py --rounds 100 --grid-file experiments/exp02_heatmap_scan.py`
@@ -57,7 +58,7 @@ This is a quick reference for logging in, checking job status, monitoring progre
 2. The code skips one run only when both `run_<id>.parquet` and `run_<id>_qtable.parquet` already exist, so it resumes automatically.
 
 **Download Results (from your Mac)**
-1. `rsync -av sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/data/results/ /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/results/`
+1. `rsync -av sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/results/ /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/results/`
 
 **Exit**
 1. `exit`
@@ -453,19 +454,29 @@ python progress_report.py --rounds 100 --grid-file experiments/exp02_heatmap_sca
 * `eval progress`、`qtable progress`、`paired progress` 都应接近或达到 `100%`
 * 最近文件列表里能看到 `run_*_qtable.parquet`
 
-## 2026-05-12 Exp03 endogenous-K scan on turing
+## 2026-05-12 Exp03 endogenous-K scan on the new SCRC Slurm cluster
 
-目标：运行 `experiments/exp03_k_choice_scan.py`，让 seller 在训练中内生选择复合动作 `(pricing rule, K choice)`。结果写入新的 `data/results_exp03`，不覆盖 exp02 的 `data/results`。
+目标：只上传运行 exp03 所需的最小文件集合，在新的 `login.scrc.nyu.edu` 集群上完成 smoke test 和正式运行。旧集群上的结果已经本地归档，因此本节不做跨集群数据迁移，只负责新集群上的 exp03 执行。
 
 本节使用：
-* `exp03_k_choice_turingvm.sbatch`
+* `exp03_k_choice_scrc.sbatch`
 * `exp03_progress_report.py`
+* `requirements.txt`
 * `experiments/exp03_k_choice_scan.py`
 * `src_ext_K_action/`
 
+新集群实际检查结果：
+* `~/bigdata/pricing_marl` 仍存在，说明你的项目存储在新入口下可直接访问。
+* `module load anaconda3/py3.9` 仍可用。
+* `conda info --envs` 仍能看到 `pricing_marl` 环境。
+* `pricing_marl` 环境已通过 exp03 依赖导入检查。
+* 新集群没有旧脚本依赖的 `bigmem` partition 和 `turingvm` 节点。
+* 当前默认分区是 `def`，其中所有节点都至少有 32 CPU；因此 `exp03_k_choice_scrc.sbatch` 请求 `32` CPU，使任务可以被 `def` 分区的全部节点接收，而不是只等待唯一的 48-CPU 节点。
+* exp03 使用 `exp03_k_choice_scrc.sbatch`，而不是旧的 `exp03_k_choice_turingvm.sbatch`。
+
 ### 当前实验参数
 
-当前默认参数来自 `experiments/exp03_k_choice_scan.py` 和 `exp03_k_choice_turingvm.sbatch`：
+当前默认参数来自 `experiments/exp03_k_choice_scan.py` 和 `exp03_k_choice_scrc.sbatch`：
 
 * `N_VALUES = [3]`
 * `MU_VALUES = [0.04, 0.07, 0.1, 0.13, 0.16, 0.19, 0.22, 0.25, 0.28, 0.31]`
@@ -532,39 +543,76 @@ pricing_marl/experiments/exp03_k_choice_scan.py
 pricing_marl/src_ext_K_action/config.py
 ```
 
-### Step 0. 本地同步 exp03 代码到服务器
+### Step 0. 登录新集群并确认目录
+
+```bash
+ssh sl9818@login.scrc.nyu.edu
+```
+
+第一次 SSH 连接时，系统会要求你确认 ED25519 host key；你已经完成这一步。登录后创建 exp03 需要的目录：
+
+```bash
+hostname
+readlink -f ~/bigdata
+ls -lah ~/bigdata/pricing_marl | head
+exit
+```
+
+如果 `~/bigdata/pricing_marl` 仍存在，就不需要重新建项目目录。
+
+
+
+### Step 1. 从本地只上传 exp03 必需文件
 
 在本地机器执行：
 
 ```bash
 cd /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning
 
+rsync -av pricing_marl/requirements.txt \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/requirements.txt
+
 rsync -av pricing_marl/experiments/exp03_k_choice_scan.py \
-  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/experiments/exp03_k_choice_scan.py
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/experiments/exp03_k_choice_scan.py
 
 rsync -av pricing_marl/src_ext_K_action/ \
-  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/src_ext_K_action/
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/src_ext_K_action/
 
-rsync -av pricing_marl/exp03_k_choice_turingvm.sbatch \
-  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/exp03_k_choice_turingvm.sbatch
+rsync -av pricing_marl/exp03_k_choice_scrc.sbatch \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/exp03_k_choice_scrc.sbatch
 
 rsync -av pricing_marl/exp03_progress_report.py \
-  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/exp03_progress_report.py
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/exp03_progress_report.py
 
 rsync -av pricing_marl/HPC_PROGRESS_GUIDE.md \
-  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/HPC_PROGRESS_GUIDE.md
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/HPC_PROGRESS_GUIDE.md
 ```
 
-说明：这里不会上传 `data/results` 或 `data/results_exp03`，避免把本地大结果传到服务器。
+这一步不会上传本地 results、notebooks、exp02 代码或 lookup table。exp03 需要的 lookup table 会在新集群第一次运行时自动生成到 `data/lookup_tables`。
 
-### Step 1. 登录服务器并进入项目目录
+### Step 2. 在新集群验证现有 conda 环境
 
 ```bash
-ssh sl9818@rnd.scrc.nyu.edu
+ssh sl9818@login.scrc.nyu.edu
 cd ~/bigdata/pricing_marl
+
+module purge
+module load anaconda3/py3.9
+conda info --envs
 ```
 
-### Step 2. 可选：先做一个小规模 smoke test
+然后确认 `pricing_marl` 能导入 exp03 所需依赖：
+
+```bash
+conda run -n pricing_marl python - <<'PY'
+import sys
+import filelock, joblib, numpy, pandas, pyarrow, scipy, tqdm, zstandard
+print(sys.executable)
+print("exp03 python environment OK")
+PY
+```
+
+### Step 3. 先做一个小规模 smoke test
 
 推荐先跑 `4strats`、一个 `mu`、2 个随机种子，确认环境和输出都正常。
 
@@ -578,8 +626,17 @@ export PRICING_MARL_EXP03_EXPERIMENT_SET="4strats"
 export PRICING_MARL_EXP03_ROUNDS_PER_CONFIG="2"
 export PRICING_MARL_EXP03_RESULTS_DIR="$HOME/bigdata/pricing_marl/data/results_exp03_smoke"
 
-sbatch exp03_k_choice_turingvm.sbatch
+sbatch exp03_k_choice_scrc.sbatch
 ```
+
+如果 `sbatch` 立刻报 partition 或资源限制错误，先在 login node 上运行：
+
+```bash
+getSlurmExamples.sh
+sinfo -s
+```
+
+然后以新集群示例和 `sinfo -s` 的实际 partition 为准，调整 `exp03_k_choice_scrc.sbatch` 里的 `#SBATCH --partition=def`、`--cpus-per-task` 或 `--time`。
 
 查看：
 
@@ -601,7 +658,7 @@ python exp03_progress_report.py \
   --recent 20
 ```
 
-### Step 3. 提交完整 exp03
+### Step 4. 提交完整 exp03
 
 完整运行前清掉 smoke test 的环境变量，避免继承筛选条件：
 
@@ -615,12 +672,12 @@ unset PRICING_MARL_EXP03_EXPERIMENT_SET
 unset PRICING_MARL_EXP03_ROUNDS_PER_CONFIG
 unset PRICING_MARL_EXP03_RESULTS_DIR
 
-sbatch exp03_k_choice_turingvm.sbatch
+sbatch exp03_k_choice_scrc.sbatch
 ```
 
 提交后记下返回的 job id。
 
-### Step 4. 查看队列、日志和资源使用
+### Step 5. 查看队列、日志和资源使用
 
 ```bash
 squeue -u $USER
@@ -642,7 +699,7 @@ sacct -j <jobid> --format=JobID,State,Elapsed,ExitCode
 
 `State` 应该是 `COMPLETED`，`ExitCode` 应该是 `0:0`。
 
-### Step 5. 用 exp03_progress_report.py 看完成度
+### Step 6. 用 exp03_progress_report.py 看完成度
 
 完整 exp03 默认检查：
 
@@ -673,13 +730,13 @@ find ~/bigdata/pricing_marl/data/results_exp03 -type f -name "run_*_qtable.parqu
 
 完整默认实验完成时，eval 文件数和 qtable 文件数都应接近或达到 `600`。更严格地看 `exp03_progress_report.py` 里的 `paired progress`，因为一个 run 只有 eval 和 qtable 都存在才算完整。
 
-### Step 6. 继续或重跑
+### Step 7. 继续或重跑
 
 直接重新提交同一个 sbatch 即可：
 
 ```bash
 cd ~/bigdata/pricing_marl
-sbatch exp03_k_choice_turingvm.sbatch
+sbatch exp03_k_choice_scrc.sbatch
 ```
 
 `runner.py` 会跳过已经同时存在 `run_<id>.parquet` 和 `run_<id>_qtable.parquet` 的 run，因此可以断点续跑。
@@ -694,20 +751,20 @@ mkdir -p data/results_exp03
 
 不要删除 `data/lookup_tables`，除非你明确改了 lookup table 的定义、价格 grid、策略函数或经济参数。exp03 使用 `base_K` lookup table，缓存文件在 `data/lookup_tables`。
 
-### Step 7. 下载结果到本地
+### Step 8. 下载结果到本地
 
 在本地机器执行：
 
 ```bash
 rsync -av --progress --partial \
-  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp03/ \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp03/ \
   /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/results_exp03/
 ```
 
 如果文件太多导致传输不稳定，可以先在服务器打包：
 
 ```bash
-ssh sl9818@rnd.scrc.nyu.edu
+ssh sl9818@login.scrc.nyu.edu
 cd ~/bigdata/pricing_marl/data
 tar -cf results_exp03_$(date +%Y_%m_%d).tar results_exp03
 exit
@@ -717,11 +774,11 @@ exit
 
 ```bash
 rsync -av --progress --partial \
-  sl9818@rnd.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp03_*.tar \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp03_*.tar \
   /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/
 ```
 
-### Step 8. 本地验收
+### Step 9. 本地验收
 
 ```bash
 cd /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl
