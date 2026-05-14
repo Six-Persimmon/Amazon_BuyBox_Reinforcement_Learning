@@ -46,6 +46,10 @@ class KActionQAgent:
     def __init__(self, agent_id, config: KActionConfig, initial_Q_table=None):
         self.id = agent_id
         self.cfg = config
+        self.allowed_action_indices = np.array(
+            config.allowed_action_indices_by_agent[agent_id],
+            dtype=int,
+        )
 
         if initial_Q_table is not None:
             # each row is a state, each column is a composite action in the form of (rule_action_idx, k_choice)
@@ -61,30 +65,32 @@ class KActionQAgent:
 
         epsilon = np.exp(-self.cfg.beta * t_step)
         if np.random.rand() < epsilon:
-            return int(np.random.randint(self.cfg.num_actions))
+            return int(np.random.choice(self.allowed_action_indices))
 
         return self.choose_greedy_action(observation)
 
     def choose_greedy_action(self, observation):
-        q_values = self.Q[observation, :]
-        max_q = np.max(q_values)
-        best_actions = np.where(q_values == max_q)[0]
+        allowed_q_values = self.Q[observation, self.allowed_action_indices]
+        max_q = np.max(allowed_q_values)
+        best_positions = np.where(allowed_q_values == max_q)[0]
+        best_actions = self.allowed_action_indices[best_positions]
         return int(np.random.choice(best_actions))
 
     def update(self, obs, action_idx, reward, next_obs):
         current_q = self.Q[obs, action_idx]
-        max_next_q = np.max(self.Q[next_obs, :])
+        max_next_q = np.max(self.Q[next_obs, self.allowed_action_indices])
         new_q = (1 - self.cfg.alpha) * current_q + self.cfg.alpha * (
             reward + self.cfg.gamma * max_next_q
         )
         self.Q[obs, action_idx] = new_q
 
     def get_greedy_policy(self):
-        return np.argmax(self.Q, axis=1)
+        allowed_q_values = self.Q[:, self.allowed_action_indices]
+        best_positions = np.argmax(allowed_q_values, axis=1)
+        return self.allowed_action_indices[best_positions]
 
     def set_forced_action(self, action_idx):
         self.forced_action = action_idx
 
     def clear_forced_action(self):
         self.forced_action = None
-

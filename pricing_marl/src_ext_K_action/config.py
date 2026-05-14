@@ -35,6 +35,7 @@ class KActionConfig:
     # Endogenous-K action settings
     base_K: int = 10
     k_choices: List[int] = field(default_factory=lambda: [10, 30, 60])
+    fixed_k_by_agent: Optional[List[int]] = None
 
     # Economic parameters
     a_val: float = 2.0
@@ -62,6 +63,7 @@ class KActionConfig:
 
     # Composite action metadata
     action_map: List[Dict[str, int]] = field(init=False)
+    allowed_action_indices_by_agent: List[List[int]] = field(init=False)
 
     def __post_init__(self):
         self.active_strategies = [int(x) for x in self.active_strategies]
@@ -87,6 +89,21 @@ class KActionConfig:
 
         self.k_choices = list(dict.fromkeys(self.k_choices))
         self.action_map = self._build_action_map()
+        if self.fixed_k_by_agent is None:
+            all_actions = [meta["composite_action_idx"] for meta in self.action_map]
+            self.allowed_action_indices_by_agent = [
+                all_actions.copy() for _ in range(self.num_sellers)
+            ]
+        else:
+            self.fixed_k_by_agent = [int(x) for x in self.fixed_k_by_agent]
+            self.allowed_action_indices_by_agent = [
+                [
+                    meta["composite_action_idx"]
+                    for meta in self.action_map
+                    if meta["k_choice"] == fixed_k
+                ]
+                for fixed_k in self.fixed_k_by_agent
+            ]
 
         self.base_dir = Path(__file__).resolve().parent.parent
         self.data_dir = self.base_dir / "data"

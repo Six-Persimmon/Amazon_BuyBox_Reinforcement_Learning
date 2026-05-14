@@ -40,7 +40,7 @@ def single_run_and_save(run_id, config: KActionConfig, output_folder: Path):
         q_table_snapshot.to_parquet(q_table_save_path, index=False, compression="zstd")
         return True
     except Exception as exc:
-        print(f"!!! Error in exp03 run {run_id}: {exc}")
+        print(f"!!! Error in K-action run {run_id}: {exc}")
         return False
 
 
@@ -55,7 +55,7 @@ def run_experiment_batch(
     **kwargs,
 ):
     print(f"\n{'=' * 60}")
-    print(f"Starting exp03 experiment: {experiment_name}")
+    print(f"Starting K-action experiment: {experiment_name}")
     print(f"Params: mu={mu}, Rounds={n_rounds}")
     print(f"Strategies: {active_strategies}")
     print(f"{'=' * 60}")
@@ -75,7 +75,7 @@ def run_experiment_batch(
         current_output_dir = base_output_dir / f"N_{n_sellers}"
         current_output_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n--- Processing exp03 N = {n_sellers} ---")
+        print(f"\n--- Processing K-action N = {n_sellers} ---")
 
         cfg = KActionConfig(
             num_sellers=n_sellers,
@@ -91,6 +91,7 @@ def run_experiment_batch(
 
         # Re-run validation/action-map/path setup after applying overrides.
         cfg.__post_init__()
+        cfg.results_dir = base_output_dir.parent
 
         config_file_path = current_output_dir.parent / f"Config_N_{n_sellers}.json"
         try:
@@ -105,7 +106,7 @@ def run_experiment_batch(
         _ = BaseKLookupEnvironment(cfg)
         print(f"        Base-K lookup table ready ({time.time() - t0_table:.1f}s).")
 
-        print(f"Step 2: Running {n_rounds} exp03 simulations in parallel...")
+        print(f"Step 2: Running {n_rounds} K-action simulations in parallel...")
         t0_sim = time.time()
 
         Parallel(n_jobs=n_jobs, verbose=5)(
@@ -114,6 +115,5 @@ def run_experiment_batch(
         )
 
         elapsed = time.time() - t0_sim
-        print(f"        Finished exp03 N={n_sellers} in {elapsed:.2f} seconds.")
+        print(f"        Finished K-action N={n_sellers} in {elapsed:.2f} seconds.")
         print(f"        Data saved to: {current_output_dir}")
-

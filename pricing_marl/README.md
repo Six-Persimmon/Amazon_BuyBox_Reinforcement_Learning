@@ -434,3 +434,200 @@ Related notebook update:
   * `Nash Eq.`
   * `State Robust`
   * `Robust Nash Eq.`
+
+## 12. 2026-05-14 exp04 Fixed-K Choice Robustness Experiment
+
+This update adds a static fixed-K robustness experiment:
+* `experiments/exp04_fix_k_choice.py`
+* `exp04_fix_k_choice_scrc.sbatch`
+
+Main purpose:
+* keep `N=3`
+* scan all current `mu` values
+* run both strategy sets (`3strats`, `4strats`)
+* compare three fixed K profiles:
+  * `(10, 10, 10)`
+  * `(10, 10, 30)`
+  * `(10, 10, 60)`
+* treat `seller_id=2` as the target seller whose fixed K varies
+
+### A. Relation to exp03
+`exp04` reuses the `src_ext_K_action` implementation from `exp03`.
+
+Key difference:
+* `exp03`: each seller chooses a composite action `(pricing rule, K)` from all available K values.
+* `exp04`: each seller chooses only the pricing rule; K is fixed by seller according to `fixed_k_by_agent`.
+
+The global composite action map is still built from:
+* `k_choices = [10, 30, 60]`
+* `base_K = 10`
+
+Then each seller is restricted to the composite actions whose `k_choice` equals that seller's fixed K.
+
+### B. Implementation details
+Core files:
+* `src_ext_K_action/config.py`
+  * adds `fixed_k_by_agent`
+  * builds `allowed_action_indices_by_agent`
+* `src_ext_K_action/agent.py`
+  * epsilon exploration samples only from the seller's allowed actions
+  * greedy action selection only compares allowed actions
+  * Q-learning bootstrap uses only allowed actions
+* `experiments/exp04_fix_k_choice.py`
+  * loops over strategy set, `mu`, and fixed-K profile
+  * passes `fixed_k_by_agent=list(k_profile)` into `run_experiment_batch`
+
+Q-table initialization is unchanged from `exp03`:
+* use the `base_K=10` lookup table
+* compute rule-level heuristic Q-values
+* broadcast them across all `(rule, K)` composite actions
+* restrict actual action choice through `allowed_action_indices_by_agent`
+
+### C. Experiment parameters
+Default `exp04` settings:
+* `N_VALUES = [3]`
+* `MU_VALUES = [0.04, 0.07, 0.1, 0.13, 0.16, 0.19, 0.22, 0.25, 0.28, 0.31]`
+* `K_CHOICES = [10, 30, 60]`
+* `K_PROFILES = [(10, 10, 10), (10, 10, 30), (10, 10, 60)]`
+* `ROUNDS_PER_CONFIG = 30`
+* `max_episodes = 2_000_000`
+* `converge_period = 10_000`
+* `eval_H = 2_000`
+* `beta = 1e-5`
+
+Total default workload:
+* `2` strategy sets
+* `10` mu values
+* `3` fixed-K profiles
+* `30` seeds
+* expected output per eval/qtable type: `2 * 10 * 3 * 30 = 1800` run files
+
+### D. Output location and schema
+Default output root:
+* `pricing_marl/data/results_exp04`
+
+Typical path:
+* `pricing_marl/data/results_exp04/scan_fixk_3strats_mu0.25_K10-10-30/N_3/run_0.parquet`
+* `pricing_marl/data/results_exp04/scan_fixk_3strats_mu0.25_K10-10-30/N_3/run_0_qtable.parquet`
+
+Saved config includes:
+* `fixed_k_by_agent`, e.g. `[10, 10, 30]`
+* `allowed_action_indices_by_agent`
+* the full composite `action_map`
+
+Evaluation parquet keeps the `exp03` columns:
+* `k_0`, `k_1`, `k_2`
+* `pi_0`, `pi_1`, `pi_2`
+* `a_0`, `a_1`, `a_2`
+* `composite_a_0`, `composite_a_1`, `composite_a_2`
+
+For the profile `(10, 10, 30)`, the evaluation output should have:
+* `k_0 = 10`
+* `k_1 = 10`
+* `k_2 = 30`
+
+### E. Optional environment filters
+`exp04` supports targeted runs without editing code:
+* `PRICING_MARL_EXP04_FILTER_N` (comma-separated ints; default grid only has `3`)
+* `PRICING_MARL_EXP04_FILTER_MU` (comma-separated floats)
+* `PRICING_MARL_EXP04_FILTER_K_PROFILE` (comma-separated profiles such as `10-10-30,10-10-60`)
+* `PRICING_MARL_EXP04_EXPERIMENT_SET` (`3strats` or `4strats`)
+* `PRICING_MARL_EXP04_ROUNDS_PER_CONFIG`
+* `PRICING_MARL_EXP04_RESULTS_DIR`
+* `PRICING_MARL_EXP04_N_JOBS`
+
+### F. New sbatch entry point
+Use:
+* `exp04_fix_k_choice_scrc.sbatch`
+
+This sbatch:
+* runs on the current SCRC Slurm cluster
+* uses the `pricing_marl` conda environment
+* requests `32` CPUs on partition `def`
+* writes outputs to `data/results_exp04` by default
+* runs `experiments/exp04_fix_k_choice.py`
+
+Smoke test example:
+
+```bash
+cd ~/bigdata/pricing_marl
+export PRICING_MARL_EXP04_RESULTS_DIR="$HOME/bigdata/pricing_marl/data/results_exp04_smoke"
+export PRICING_MARL_EXP04_FILTER_MU="0.04"
+export PRICING_MARL_EXP04_FILTER_K_PROFILE="10-10-30"
+export PRICING_MARL_EXP04_EXPERIMENT_SET="3strats"
+export PRICING_MARL_EXP04_ROUNDS_PER_CONFIG="1"
+export PRICING_MARL_EXP04_MAX_EPISODES="100"
+export PRICING_MARL_EXP04_CONVERGE_PERIOD="10"
+export PRICING_MARL_EXP04_EVAL_H="60"
+sbatch exp04_fix_k_choice_scrc.sbatch
+```
+
+Full run:
+
+```bash
+cd ~/bigdata/pricing_marl
+unset PRICING_MARL_EXP04_FILTER_MU
+unset PRICING_MARL_EXP04_FILTER_K_PROFILE
+unset PRICING_MARL_EXP04_EXPERIMENT_SET
+unset PRICING_MARL_EXP04_RESULTS_DIR
+sbatch exp04_fix_k_choice_scrc.sbatch
+```
+
+### G. Progress monitoring
+Use:
+* `exp04_progress_report.py`
+
+Default full-run check:
+
+```bash
+cd ~/bigdata/pricing_marl
+python exp04_progress_report.py \
+  --root ~/bigdata/pricing_marl/data/results_exp04 \
+  --rounds 30 \
+  --recent 20
+```
+
+Targeted smoke-test check:
+
+```bash
+python exp04_progress_report.py \
+  --root ~/bigdata/pricing_marl/data/results_exp04_smoke \
+  --rounds 1 \
+  --experiment-set 3strats \
+  --mu-values 0.04 \
+  --k-profiles 10-10-30 \
+  --recent-kind qtable \
+  --recent 10
+```
+
+Main progress metric:
+* `paired progress`
+
+One run is counted as paired only when both files exist:
+* `run_<id>.parquet`
+* `run_<id>_qtable.parquet`
+
+Default full experiment expected count per strategy set:
+* `1 * 10 * 3 * 30 = 900` paired runs
+
+Default full experiment expected count across both strategy sets:
+* `1800` paired runs
+
+### H. Lookup table reuse
+`exp04` uses the same base-K lookup-table design as `exp03`.
+
+Lookup tables depend on:
+* `N`
+* `mu`
+* strategy set
+* grid construction
+* `base_K`
+
+They do not depend on:
+* fixed-K profile
+* `ROUNDS_PER_CONFIG`
+* `converge_period`
+* `eval_H`
+* output directory
+
+Therefore `exp04` can reuse the same `base_K=10` lookup tables as `exp03` when the lookup-defining parameters match.
