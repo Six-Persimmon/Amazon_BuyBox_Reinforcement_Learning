@@ -1,6 +1,15 @@
 /data
 /analysis/results
 /pricing_marl/data
-/pricing_marl/analysis/figures
+/pricing_marl/analysis
 /pricing_marl_static_nash_mono
 /pricing_marl_nash_mono_grid
+/agents
+/analysis
+/env
+/experiments
+/figure
+/old
+/simulations
+/pricing_marl_static_nash_mono
+/utils
