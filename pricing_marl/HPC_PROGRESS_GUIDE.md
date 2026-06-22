@@ -794,3 +794,369 @@ python exp03_progress_report.py \
 * `paired progress` 对 `3strats` 和 `4strats` 都接近或达到 `100%`
 * 最近文件列表里同时能看到 `run_*.parquet` 和 `run_*_qtable.parquet`
 * 目录名形如 `scan_kchoice_4strats_mu0.25_K10-30-60/N_3`
+
+## 2026-06-07 Exp05 K=1 scan on the new SCRC Slurm cluster
+
+目标：运行固定 `K=1` 的 exp02-style heatmap scan。这个实验使用标准 `src/` fixed-K code path，不使用 exp03/exp04 的 endogenous-K extension。结果单独写入 `data/results_exp05`，避免和 exp02 的 `data/results` 混在一起。
+
+本节使用：
+* `experiments/exp05_k_1_scan.py`
+* `exp05_k_1_scan_scrc.sbatch`
+* `exp05_progress_report.py`
+* `src/`
+
+重要：`exp05_k_1_scan_scrc.sbatch` 不应该在 Slurm job 内用 `conda info --envs` 自动查找环境。之前 job `4231` 卡在只输出 `PROJECT_DIR=...` 的阶段，就是因为环境发现步骤可能挂住。当前脚本直接检查已知的 `pricing_marl` Python 路径：
+
+```text
+/home/sl9818/.conda/envs/pricing_marl/bin/python
+/home/sl9818/bigdata/pricing_marl/.conda/envs/pricing_marl/bin/python
+/mnt/netapp_data/bighomes-active-netapp/sl9818/pricing_marl/.conda/envs/pricing_marl/bin/python
+```
+
+正常启动后，log 应很快出现 `ENV_PY=...`、`PYTHON: ...`、`EXP05 settings:` 和 `Starting exp05 K=1 scan...`。
+
+### 当前实验参数
+
+当前默认参数来自 `experiments/exp05_k_1_scan.py` 和 `exp05_k_1_scan_scrc.sbatch`：
+
+* `N_VALUES = [2, 3, 5, 7, 10]`
+* `MU_VALUES = [0.04, 0.07, 0.1, 0.13, 0.16, 0.19, 0.22, 0.25, 0.28, 0.31]`
+* `K_VALUES = [1]`
+* `ROUNDS_PER_CONFIG = 30`
+* `MAX_EPISODES = 2_000_000`
+* `CONVERGE_PERIOD = 10_000`
+* `EVAL_H = 2_000`
+* `beta = 1e-5`
+* `save_training_data = False`
+* strategy sets:
+  * `3strats = [undercut, match, above]`
+  * `4strats = [undercut, match, above, undercut+reset]`
+
+`K=1` 的含义：每次 RL action 只持续 1 个 atomic price-update step。相比 exp02 里 `K>1` 的情况，这里没有多步 action commitment，也没有跨多个 inner steps 的 reward averaging；agent 选择策略后，价格更新一次，观察一次利润，并进入这一步之后的 lowest-price state。
+
+输出目录结构：
+
+```text
+data/results_exp05/
+  scan_k1_3strats_mu0.04_k1/N_2/run_0.parquet
+  scan_k1_3strats_mu0.04_k1/N_2/run_0_qtable.parquet
+  scan_k1_4strats_mu0.04_k1/N_2/run_0.parquet
+  ...
+```
+
+默认总规模：
+
+* 每个 strategy set: `5 N * 10 mu * 1 K * 30 rounds = 1500` runs
+* 两个 strategy sets 合计: `3000` runs
+* 每个 run 产出 eval 和 qtable 两个 parquet 文件
+
+### 参数在哪里改
+
+最稳妥的方式是在提交任务前用环境变量改，不需要编辑 Python：
+
+```bash
+export PRICING_MARL_EXP05_FILTER_N="2,3"
+export PRICING_MARL_EXP05_FILTER_MU="0.04,0.07"
+export PRICING_MARL_EXP05_EXPERIMENT_SET="3strats"
+export PRICING_MARL_EXP05_ROUNDS_PER_CONFIG="10"
+export PRICING_MARL_EXP05_MAX_EPISODES="200000"
+export PRICING_MARL_EXP05_CONVERGE_PERIOD="10000"
+export PRICING_MARL_EXP05_EVAL_H="2000"
+export PRICING_MARL_EXP05_RESULTS_DIR="$HOME/bigdata/pricing_marl/data/results_exp05_test"
+```
+
+常用调整：
+
+* 只跑一个策略集：`PRICING_MARL_EXP05_EXPERIMENT_SET="3strats"` 或 `"4strats"`
+* 只跑部分 `N`：`PRICING_MARL_EXP05_FILTER_N="2,3"`
+* 只跑部分 `mu`：`PRICING_MARL_EXP05_FILTER_MU="0.04,0.1"`
+* 小规模 smoke test：`PRICING_MARL_EXP05_ROUNDS_PER_CONFIG="2"`，再配合一个 `N`、一个 `mu`、一个 strategy set
+* 改输出目录：`PRICING_MARL_EXP05_RESULTS_DIR="$HOME/bigdata/pricing_marl/data/results_exp05_smoke"`
+
+如果要永久修改默认网格，再编辑：
+
+```text
+pricing_marl/experiments/exp05_k_1_scan.py
+```
+
+如果要改动作空间、学习率、折扣因子、经济参数或默认路径，再编辑：
+
+```text
+pricing_marl/src/config.py
+```
+
+### Step 0. 登录新集群并确认目录
+
+```bash
+ssh sl9818@login.scrc.nyu.edu
+cd ~/bigdata/pricing_marl
+hostname
+ls -lah | head
+exit
+```
+
+如果 `~/bigdata/pricing_marl` 仍存在，就不需要重新建项目目录。
+
+### Step 1. 从本地只上传 exp05 必需文件
+
+在本地机器执行：
+
+```bash
+cd /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning
+
+rsync -av pricing_marl/experiments/exp05_k_1_scan.py \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/experiments/exp05_k_1_scan.py
+
+rsync -av pricing_marl/exp05_k_1_scan_scrc.sbatch \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/exp05_k_1_scan_scrc.sbatch
+
+rsync -av pricing_marl/exp05_progress_report.py \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/exp05_progress_report.py
+
+rsync -av pricing_marl/src/ \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/src/
+
+rsync -av pricing_marl/HPC_PROGRESS_GUIDE.md \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/HPC_PROGRESS_GUIDE.md
+```
+
+这一步不会上传本地 results、notebooks 或 exp03/exp04 extension code。exp05 需要的 lookup table 会在服务器第一次运行时自动生成到 `data/lookup_tables`。
+
+### Step 2. 在新集群验证现有 conda 环境
+
+```bash
+ssh sl9818@login.scrc.nyu.edu
+cd ~/bigdata/pricing_marl
+
+module purge
+module load anaconda3/py3.9
+conda info --envs
+```
+
+然后确认 `pricing_marl` 能导入 exp05 所需依赖：
+
+```bash
+conda run -n pricing_marl python - <<'PY'
+import sys
+import filelock, joblib, numpy, pandas, pyarrow, scipy, tqdm, zstandard
+print(sys.executable)
+print("exp05 python environment OK")
+PY
+```
+
+如果 `conda info --envs` 输出包含多个 `pricing_marl` 路径，这是正常的。exp05 sbatch 会优先使用可执行的 `$HOME/.conda/envs/pricing_marl/bin/python`，而不是在 job 内再次调用 `conda info --envs`。
+
+### Step 3. 先做一个小规模 smoke test
+
+推荐先跑 `3strats`、`N=2`、`mu=0.04`、2 个随机种子，确认环境和输出都正常。
+
+```bash
+cd ~/bigdata/pricing_marl
+
+export PRICING_MARL_EXP05_FILTER_N="2"
+export PRICING_MARL_EXP05_FILTER_MU="0.04"
+export PRICING_MARL_EXP05_EXPERIMENT_SET="3strats"
+export PRICING_MARL_EXP05_ROUNDS_PER_CONFIG="2"
+export PRICING_MARL_EXP05_RESULTS_DIR="$HOME/bigdata/pricing_marl/data/results_exp05_smoke"
+
+sbatch exp05_k_1_scan_scrc.sbatch
+```
+
+如果 `sbatch` 立刻报 partition 或资源限制错误，先在 login node 上运行：
+
+```bash
+getSlurmExamples.sh
+sinfo -s
+```
+
+然后以新集群示例和 `sinfo -s` 的实际 partition 为准，调整 `exp05_k_1_scan_scrc.sbatch` 里的 `#SBATCH --partition=def`、`--cpus-per-task` 或 `--time`。
+
+查看：
+
+```bash
+squeue -u $USER
+tail -f exp05_k1_<jobid>.out
+```
+
+如果 log 长时间只停在：
+
+```text
+PROJECT_DIR=/mnt/netapp_data/bighomes-active-netapp/sl9818/pricing_marl
+```
+
+并且 `sstat` 显示 CPU 很低，例如：
+
+```bash
+sstat -j <jobid>.batch --format=AveCPU,AveRSS,MaxRSS
+```
+
+则说明 job 还没有进入 exp05 Python 脚本，通常是 sbatch 环境定位步骤卡住。处理方式：
+
+```bash
+scancel <jobid>
+```
+
+然后从本地重新上传最新版 sbatch：
+
+```bash
+cd /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning
+rsync -av pricing_marl/exp05_k_1_scan_scrc.sbatch \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/exp05_k_1_scan_scrc.sbatch
+```
+
+再重新提交 smoke test。新版 sbatch 应该很快打印 `ENV_PY=/home/sl9818/.conda/envs/pricing_marl/bin/python` 或另一个可执行的 `pricing_marl` Python 路径。
+
+smoke test 完成后检查：
+
+```bash
+python exp05_progress_report.py \
+  --root ~/bigdata/pricing_marl/data/results_exp05_smoke \
+  --rounds 2 \
+  --n-values 2 \
+  --mu-values 0.04 \
+  --experiment-set 3strats \
+  --recent 20
+```
+
+重点确认能看到：
+
+```text
+scan_k1_3strats_mu0.04_k1/N_2/run_0.parquet
+scan_k1_3strats_mu0.04_k1/N_2/run_0_qtable.parquet
+```
+
+### Step 4. 提交完整 exp05
+
+完整运行前清掉 smoke test 的环境变量，避免继承筛选条件：
+
+```bash
+cd ~/bigdata/pricing_marl
+
+unset PRICING_MARL_EXP05_FILTER_N
+unset PRICING_MARL_EXP05_FILTER_MU
+unset PRICING_MARL_EXP05_EXPERIMENT_SET
+unset PRICING_MARL_EXP05_ROUNDS_PER_CONFIG
+unset PRICING_MARL_EXP05_RESULTS_DIR
+
+sbatch exp05_k_1_scan_scrc.sbatch
+```
+
+提交后记下返回的 job id。
+
+### Step 5. 查看队列、日志和资源使用
+
+```bash
+squeue -u $USER
+scontrol show job <jobid> | grep -E 'StdOut|WorkDir|State|StartTime'
+tail -f exp05_k1_<jobid>.out
+```
+
+如果任务已经开始运行，可看 batch step 的 CPU 和内存：
+
+```bash
+sstat -j <jobid>.batch --format=AveCPU,AveRSS,MaxRSS
+```
+
+如果任务结束了：
+
+```bash
+sacct -j <jobid> --format=JobID,State,Elapsed,ExitCode
+```
+
+`State` 应该是 `COMPLETED`，`ExitCode` 应该是 `0:0`。
+
+### Step 6. 用 exp05_progress_report.py 看完成度
+
+完整 exp05 默认检查：
+
+```bash
+cd ~/bigdata/pricing_marl
+python exp05_progress_report.py \
+  --rounds 30 \
+  --grid-file experiments/exp05_k_1_scan.py \
+  --recent 20
+```
+
+只看最新 qtable：
+
+```bash
+python exp05_progress_report.py \
+  --rounds 30 \
+  --grid-file experiments/exp05_k_1_scan.py \
+  --recent 20 \
+  --recent-kind qtable
+```
+
+快速 shell 计数：
+
+```bash
+find ~/bigdata/pricing_marl/data/results_exp05 -type f -name "run_*.parquet" ! -name "run_*_qtable.parquet" | wc -l
+find ~/bigdata/pricing_marl/data/results_exp05 -type f -name "run_*_qtable.parquet" | wc -l
+```
+
+完整默认实验完成时，eval 文件数和 qtable 文件数都应接近或达到 `3000`。更严格地看 `exp05_progress_report.py` 里的 `paired progress`，因为一个 run 只有 eval 和 qtable 都存在才算完整。
+
+### Step 7. 继续或重跑
+
+直接重新提交同一个 sbatch 即可：
+
+```bash
+cd ~/bigdata/pricing_marl
+sbatch exp05_k_1_scan_scrc.sbatch
+```
+
+`runner.py` 会跳过已经同时存在 `run_<id>.parquet` 和 `run_<id>_qtable.parquet` 的 run，因此可以断点续跑。
+
+如果你改了训练逻辑、evaluation 逻辑或参数，并希望强制重跑，先备份或清空目标结果目录：
+
+```bash
+cd ~/bigdata/pricing_marl
+mv data/results_exp05 data/results_exp05_backup_$(date +%Y_%m_%d)
+mkdir -p data/results_exp05
+```
+
+不要删除 `data/lookup_tables`，除非你明确改了 lookup table 的定义、价格 grid、策略函数、经济参数或 `K` 的含义。exp05 的 lookup table 会包含 `K=1`。
+
+### Step 8. 下载结果到本地
+
+在本地机器执行：
+
+```bash
+rsync -av --progress --partial \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp05/ \
+  /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/results_exp05/
+```
+
+如果文件太多导致传输不稳定，可以先在服务器打包：
+
+```bash
+ssh sl9818@login.scrc.nyu.edu
+cd ~/bigdata/pricing_marl/data
+tar -cf results_exp05_$(date +%Y_%m_%d).tar results_exp05
+exit
+```
+
+然后在本地下载单个 tar：
+
+```bash
+rsync -av --progress --partial \
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp05_*.tar \
+  /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/
+```
+
+### Step 9. 本地验收
+
+```bash
+cd /Users/liushijian/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl
+python exp05_progress_report.py \
+  --root data/results_exp05 \
+  --rounds 30 \
+  --grid-file experiments/exp05_k_1_scan.py \
+  --recent 20
+```
+
+重点确认：
+
+* `paired progress` 对 `3strats` 和 `4strats` 都接近或达到 `100%`
+* 最近文件列表里同时能看到 `run_*.parquet` 和 `run_*_qtable.parquet`
+* 目录名形如 `scan_k1_4strats_mu0.25_k1/N_10`
