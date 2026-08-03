@@ -15,6 +15,11 @@ module purge
 module load anaconda3/py3.9
 
 PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd -P)}"
+# The sbatch scripts live in pricing_marl/hpc/; if the job was submitted from
+# inside hpc/, step up to the project root.
+if [ "$(basename "$PROJECT_DIR")" = "hpc" ]; then
+  PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+fi
 echo "PROJECT_DIR=$PROJECT_DIR"
 cd "$PROJECT_DIR" || exit 1
 

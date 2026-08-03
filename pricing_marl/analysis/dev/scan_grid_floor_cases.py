@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.environment import compute_nash_and_monopoly_static, get_demand_and_profit_static

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Simple progress report for pricing_marl heatmap runs.
+Progress report for exp03 endogenous-K runs.
 
 Usage:
-  python progress_report.py --rounds 100
-  python progress_report.py --root /path/to/data/results --rounds 100
+  python exp03_progress_report.py --rounds 30
+  python exp03_progress_report.py --root /path/to/data/results_exp03 --rounds 30
 """
 
 from __future__ import annotations
@@ -16,20 +16,19 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Set, Tuple
 
 
-def _default_root() -> Path:
-    """Prefer bigdata path if it exists; otherwise use repo-local data/results."""
-    bigdata = Path("~/bigdata/pricing_marl/data/results").expanduser()
-    if bigdata.exists():
-        return bigdata
-    return Path(__file__).resolve().parent / "data" / "results"
-
-
 RUN_FILE_RE = re.compile(r"^run_(\d+)\.parquet$")
 QTABLE_FILE_RE = re.compile(r"^run_(\d+)_qtable\.parquet$")
+SCAN_DIR_RE = re.compile(r"^scan_kchoice_(3strats|4strats)_mu(.+)_K(.+)$")
+
+
+def _default_root() -> Path:
+    bigdata = Path("~/bigdata/pricing_marl/data/results_exp03").expanduser()
+    if bigdata.exists():
+        return bigdata
+    return Path(__file__).resolve().parent.parent / "data" / "results_exp03"
 
 
 def _collect_run_ids(n_dir: Path) -> Tuple[Set[int], Set[int]]:
-    """Return (eval_run_ids, qtable_run_ids) for one N directory."""
     eval_ids: Set[int] = set()
     qtable_ids: Set[int] = set()
 
@@ -64,25 +63,7 @@ def _list_recent(root: Path, limit: int, kind: str) -> List[Tuple[float, Path]]:
     return files[-limit:]
 
 
-def _extract_list_len(tree: ast.AST, name: str) -> Optional[int]:
-    """Find the last assignment to `name` and return list length if literal."""
-    last_len: Optional[int] = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == name:
-                    if isinstance(node.value, (ast.List, ast.Tuple)):
-                        try:
-                            val = ast.literal_eval(node.value)
-                        except Exception:
-                            continue
-                        if isinstance(val, (list, tuple)):
-                            last_len = len(val)
-    return last_len
-
-
 def _extract_list_values(tree: ast.AST, name: str) -> Optional[List]:
-    """Find the last literal list/tuple assignment to `name` and return values."""
     last_values: Optional[List] = None
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
@@ -98,20 +79,9 @@ def _extract_list_values(tree: ast.AST, name: str) -> Optional[List]:
     return last_values
 
 
-def _infer_grid_sizes(grid_file: Path) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-    if not grid_file.exists():
-        return None, None, None
-    try:
-        tree = ast.parse(grid_file.read_text())
-    except Exception:
-        return None, None, None
-    n_count = _extract_list_len(tree, "N_VALUES")
-    mu_count = _extract_list_len(tree, "MU_VALUES")
-    k_count = _extract_list_len(tree, "K_VALUES")
-    return n_count, mu_count, k_count
-
-
-def _infer_grid_values(grid_file: Path) -> Tuple[Optional[List[int]], Optional[List[float]], Optional[List[int]]]:
+def _infer_grid_values(
+    grid_file: Path,
+) -> Tuple[Optional[List[int]], Optional[List[float]], Optional[List[int]]]:
     if not grid_file.exists():
         return None, None, None
     try:
@@ -121,7 +91,7 @@ def _infer_grid_values(grid_file: Path) -> Tuple[Optional[List[int]], Optional[L
 
     n_vals_raw = _extract_list_values(tree, "N_VALUES")
     mu_vals_raw = _extract_list_values(tree, "MU_VALUES")
-    k_vals_raw = _extract_list_values(tree, "K_VALUES")
+    k_vals_raw = _extract_list_values(tree, "K_CHOICES")
     if n_vals_raw is None or mu_vals_raw is None or k_vals_raw is None:
         return None, None, None
 
@@ -134,30 +104,43 @@ def _infer_grid_values(grid_file: Path) -> Tuple[Optional[List[int]], Optional[L
     return n_vals, mu_vals, k_vals
 
 
-SCAN_DIR_RE = re.compile(r"^scan_(3strats|4strats)_mu(.+)_k(.+)$")
-
-
-def _parse_scan_dir(scan_dir_name: str) -> Optional[Tuple[str, float, int]]:
+def _parse_scan_dir(scan_dir_name: str) -> Optional[Tuple[str, float, str]]:
     m = SCAN_DIR_RE.match(scan_dir_name)
     if not m:
         return None
-    label = m.group(1)
     try:
         mu_val = float(m.group(2))
-        k_val = int(float(m.group(3)))
     except ValueError:
         return None
-    return label, mu_val, k_val
+    return m.group(1), mu_val, m.group(3)
 
 
 def _float_in(values: Sequence[float], x: float, tol: float = 1e-12) -> bool:
     return any(abs(v - x) <= tol for v in values)
 
 
+def _parse_int_csv(raw: Optional[str]) -> Optional[List[int]]:
+    if raw is None:
+        return None
+    vals = [int(token.strip()) for token in raw.split(",") if token.strip()]
+    return vals or None
+
+
+def _parse_float_csv(raw: Optional[str]) -> Optional[List[float]]:
+    if raw is None:
+        return None
+    vals = [float(token.strip()) for token in raw.split(",") if token.strip()]
+    return vals or None
+
+
+def _k_label(k_values: Sequence[int]) -> str:
+    return "-".join(str(int(v)) for v in k_values)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Report progress for 3strats/4strats runs.")
-    parser.add_argument("--root", type=str, default=None, help="Path to data/results")
-    parser.add_argument("--rounds", type=int, default=100, help="Runs per N (default: 100)")
+    parser = argparse.ArgumentParser(description="Report progress for exp03 endogenous-K runs.")
+    parser.add_argument("--root", type=str, default=None, help="Path to data/results_exp03")
+    parser.add_argument("--rounds", type=int, default=30, help="Runs per N/mu/set (default: 30)")
     parser.add_argument("--recent", type=int, default=10, help="Show N most recent files")
     parser.add_argument(
         "--recent-kind",
@@ -170,15 +153,22 @@ def main() -> None:
         "--grid-file",
         type=str,
         default=None,
-        help="Path to exp02_heatmap_scan.py (to infer N/Mu/K sizes)",
+        help="Path to exp03_k_choice_scan.py (to infer N/Mu/K choices)",
     )
-    parser.add_argument("--n-count", type=int, default=None, help="Override N_VALUES length")
-    parser.add_argument("--mu-count", type=int, default=None, help="Override MU_VALUES length")
-    parser.add_argument("--k-count", type=int, default=None, help="Override K_VALUES length")
+    parser.add_argument("--n-values", type=str, default=None, help="Comma-separated N values")
+    parser.add_argument("--mu-values", type=str, default=None, help="Comma-separated mu values")
+    parser.add_argument("--k-values", type=str, default=None, help="Comma-separated K choices")
+    parser.add_argument(
+        "--experiment-set",
+        type=str,
+        choices=["3strats", "4strats"],
+        default=None,
+        help="Report only one strategy set",
+    )
     parser.add_argument(
         "--include-extra-dirs",
         action="store_true",
-        help="Include result folders outside current grid-file values (default: filtered out)",
+        help="Include result folders outside inferred/requested values",
     )
     args = parser.parse_args()
 
@@ -187,47 +177,57 @@ def main() -> None:
         print(f"[ERROR] Results root not found: {root}")
         return
 
+    grid_file = Path(args.grid_file).expanduser() if args.grid_file else (
+        Path(__file__).resolve().parent.parent / "experiments" / "exp03_k_choice_scan.py"
+    )
+    n_values, mu_values, k_values = _infer_grid_values(grid_file)
+
+    cli_n_values = _parse_int_csv(args.n_values)
+    cli_mu_values = _parse_float_csv(args.mu_values)
+    cli_k_values = _parse_int_csv(args.k_values)
+    if cli_n_values is not None:
+        n_values = cli_n_values
+    if cli_mu_values is not None:
+        mu_values = cli_mu_values
+    if cli_k_values is not None:
+        k_values = cli_k_values
+
+    expected_k_label = _k_label(k_values) if k_values else None
+    labels = [args.experiment_set] if args.experiment_set else ["4strats", "3strats"]
+
     print(f"Results root: {root}")
     print(f"Rounds per config: {args.rounds}")
-    # Infer grid sizes (optional)
-    grid_file = Path(args.grid_file).expanduser() if args.grid_file else (
-        Path(__file__).resolve().parent / "experiments" / "exp02_heatmap_scan.py"
-    )
-    n_count, mu_count, k_count = _infer_grid_sizes(grid_file)
-    n_values, mu_values, k_values = _infer_grid_values(grid_file)
-    if args.n_count is not None:
-        n_count = args.n_count
-    if args.mu_count is not None:
-        mu_count = args.mu_count
-    if args.k_count is not None:
-        k_count = args.k_count
-
+    print(f"Grid file: {grid_file}")
+    if n_values is not None:
+        print(f"N values: {n_values}")
+    if mu_values is not None:
+        print(f"Mu values: {mu_values}")
+    if expected_k_label is not None:
+        print(f"K choices label: {expected_k_label}")
     print("-" * 60)
-    if n_count and mu_count and k_count:
-        print(f"Grid sizes: N={n_count}, Mu={mu_count}, K={k_count}")
-        print(f"Expected runs per strategy: {n_count * mu_count * k_count * args.rounds}")
-        print("-" * 60)
 
-    labels = ["4strats", "3strats"]
     overall_eval = 0
     overall_qtable = 0
     overall_paired = 0
     overall_expected = 0
 
     for label in labels:
-        scan_dirs_all = sorted(root.glob(f"scan_{label}_*"))
+        scan_dirs_all = sorted(root.glob(f"scan_kchoice_{label}_*"))
         scan_dirs = scan_dirs_all
         ignored_scan_dirs = 0
         ignored_n_dirs = 0
-        if not args.include_extra_dirs and mu_values is not None and k_values is not None:
+
+        if not args.include_extra_dirs and (mu_values is not None or expected_k_label is not None):
             filtered_scan_dirs = []
             for scan in scan_dirs_all:
                 parsed = _parse_scan_dir(scan.name)
                 if parsed is None:
                     ignored_scan_dirs += 1
                     continue
-                _, mu_val, k_val = parsed
-                if _float_in(mu_values, mu_val) and (k_val in k_values):
+                _, mu_val, k_label = parsed
+                mu_ok = mu_values is None or _float_in(mu_values, mu_val)
+                k_ok = expected_k_label is None or k_label == expected_k_label
+                if mu_ok and k_ok:
                     filtered_scan_dirs.append(scan)
                 else:
                     ignored_scan_dirs += 1
@@ -280,11 +280,18 @@ def main() -> None:
                 if orphan_q:
                     orphan_qtable.append((n_dir, len(orphan_q)))
 
+        missing_expected_dirs: List[Path] = []
+        expected_by_grid = None
+        if n_values is not None and mu_values is not None and expected_k_label is not None:
+            expected_by_grid = len(n_values) * len(mu_values) * args.rounds
+            for mu_val in mu_values:
+                scan = root / f"scan_kchoice_{label}_mu{mu_val}_K{expected_k_label}"
+                for n_val in n_values:
+                    n_dir = scan / f"N_{n_val}"
+                    if not n_dir.exists():
+                        missing_expected_dirs.append(n_dir)
+
         expected_by_dirs = n_dirs * args.rounds
-        if n_count and mu_count and k_count:
-            expected_by_grid = n_count * mu_count * k_count * args.rounds
-        else:
-            expected_by_grid = None
         expected = expected_by_grid or expected_by_dirs
 
         eval_pct = (total_eval / expected * 100.0) if expected else 0.0
@@ -302,12 +309,18 @@ def main() -> None:
         print(f"  qtable found:  {total_qtable}")
         print(f"  paired found:  {total_paired}")
         if expected_by_grid is not None:
-            print(f"  expected (grid):  {expected_by_grid}")
+            print(f"  expected (grid): {expected_by_grid}")
         print(f"  expected (dirs): {expected_by_dirs}")
         print(f"  eval progress:   {eval_pct:.2f}%")
         print(f"  qtable progress: {q_pct:.2f}%")
         print(f"  paired progress: {paired_pct:.2f}%")
 
+        if missing_expected_dirs:
+            print("  missing expected N dirs:")
+            for path in missing_expected_dirs[:20]:
+                print(f"    {path}")
+            if len(missing_expected_dirs) > 20:
+                print(f"    ... {len(missing_expected_dirs) - 20} more")
         if incomplete:
             print("  incomplete (paired < rounds):")
             for path, eval_count, q_count, paired_count in incomplete[:20]:

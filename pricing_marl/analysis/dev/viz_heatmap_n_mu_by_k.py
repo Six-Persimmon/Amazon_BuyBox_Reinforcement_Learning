@@ -6,11 +6,12 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.colors import ListedColormap
 import time
 from datetime import datetime
 
 # Project Root
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.strategies import ID_TO_NAME, ACT_UNDERCUT, ACT_MATCH, ACT_ABOVE, ACT_UNDER_RESET, ACT_MATCH_RESET
@@ -138,73 +139,89 @@ def compute_metrics_for_run(df, N):
         "avg_price": avg_price
     }, action_counts, total_count
 
-def draw_fixed_order_action_heatmap(ax, df_n, mu_values, k_values, valid_actions):
+def draw_split_action_heatmap(ax, df_k, mu_values, n_values, valid_actions):
     """
-    Draw split tiles with fixed action order left-to-right.
+    自定义绘图函数：在 Grid 中绘制分割矩形
     """
+    # 设置坐标轴
     ax.set_xlim(0, len(mu_values))
-    ax.set_ylim(0, len(k_values))
-
+    ax.set_ylim(0, len(n_values))
+    
+    # 标签
     ax.set_xticks(np.arange(len(mu_values)) + 0.5)
     ax.set_xticklabels(mu_values)
-    ax.set_yticks(np.arange(len(k_values)) + 0.5)
-    ax.set_yticklabels(k_values)
-    ax.set_xlabel("$\\mu$")
-    ax.set_ylabel("K")
-    ax.tick_params(axis="x", labelsize=9)
-    ax.tick_params(axis="y", labelsize=9)
-
-    sorted_k = sorted(k_values, reverse=True)
-
-    for row_idx, k_val in enumerate(sorted_k):
+    ax.set_yticks(np.arange(len(n_values)) + 0.5)
+    ax.set_yticklabels(n_values)
+    ax.set_xlabel("mu")
+    ax.set_ylabel("N")
+    
+    # 反转 Y 轴让 N 从大到小排列 (和 Heatmap 保持一致)
+    sorted_n = sorted(n_values, reverse=True) # Top row is max N
+    
+    # 遍历每个格子
+    for row_idx, n_val in enumerate(sorted_n):
         for col_idx, mu_val in enumerate(mu_values):
-            mask = (df_n["K"] == k_val) & (df_n["mu"] == mu_val)
-            if not mask.any():
-                continue
-
-            row_data = df_n[mask].iloc[0]
-
-            y_pos = len(k_values) - 1 - row_idx
+            
+            # 获取该格子的数据
+            mask = (df_k['N'] == n_val) & (df_k['mu'] == mu_val)
+            if not mask.any(): continue
+            
+            row_data = df_k[mask].iloc[0]
+            
+            # 提取 Shares
+            shares = []
+            for aid in range(MAX_ACTION_ID + 1):
+                s = row_data.get(f"share_{aid}", 0.0)
+                shares.append((aid, s))
+            
+            # 排序找出 Top 2
+            shares.sort(key=lambda x: x[1], reverse=True)
+            top1_id, top1_share = shares[0]
+            top2_id, top2_share = shares[1]
+            
+            # 坐标转换：Heatmap 的 row 0 在最上面
+            # 在 Matplotlib 坐标系中，y=0 是底部。
+            # 所以 row_idx 0 (N_max) 应该画在 y = len(n) - 1 - row_idx
+            y_pos = len(n_values) - 1 - row_idx
             x_pos = col_idx
-
-            cursor = 0.0
-            for aid in valid_actions:
-                share = row_data.get(f"share_{aid}", 0.0)
-                if share <= 0:
-                    continue
-                color = ACTION_COLOR_MAP.get(aid, "gray")
-                rect = mpatches.Rectangle(
-                    (x_pos + cursor, y_pos), width=share, height=1,
-                    facecolor=color, edgecolor="none"
+            
+            # 1. 绘制 Top 1 矩形 (左侧)
+            if top1_share > 0:
+                color1 = ACTION_COLOR_MAP.get(top1_id, 'gray')
+                rect1 = mpatches.Rectangle(
+                    (x_pos, y_pos), width=top1_share, height=1, 
+                    facecolor=color1, edgecolor='none'
                 )
-                ax.add_patch(rect)
-                cursor += share
-
+                ax.add_patch(rect1)
+            
+            # 2. 绘制 Top 2 矩形 (紧接在 Top 1 之后)
+            if top2_share > 0.01: # 只有当份额 > 1% 才画，避免太细
+                color2 = ACTION_COLOR_MAP.get(top2_id, 'gray')
+                rect2 = mpatches.Rectangle(
+                    (x_pos + top1_share, y_pos), width=top2_share, height=1, 
+                    facecolor=color2, edgecolor='none'
+                )
+                ax.add_patch(rect2)
+                
+            # 3. 画个白框把格子隔开
             border = mpatches.Rectangle(
-                (x_pos, y_pos), 1, 1,
-                fill=False, edgecolor="white", linewidth=1
+                (x_pos, y_pos), 1, 1, 
+                fill=False, edgecolor='white', linewidth=1
             )
             ax.add_patch(border)
 
+    # 去除默认边框线，让图看起来像 Heatmap
     for spine in ax.spines.values():
         spine.set_visible(False)
-
+        
+    # 构建 Legend (根据 valid_actions 过滤)
     patches = []
     for aid in valid_actions:
-        color = ACTION_COLOR_MAP.get(aid, "black")
+        color = ACTION_COLOR_MAP.get(aid, 'black')
         label = f"{ID_TO_NAME.get(aid, str(aid))}"
         patches.append(mpatches.Patch(color=color, label=label))
-    ax.legend(
-        handles=patches,
-        bbox_to_anchor=(0.5, -0.24),
-        loc="upper center",
-        ncol=len(valid_actions),
-        borderaxespad=0.0,
-        fontsize=10,
-        title="Rule Type",
-        title_fontsize=10,
-        frameon=False,
-    )
+    
+    ax.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., fontsize=10, title="Action Share")
 
 def plot_heatmaps(df_summary):
     sns.set_context("talk")
@@ -215,10 +232,10 @@ def plot_heatmaps(df_summary):
         lambda x: "4 Strategies" if "4strats" in x else "3 Strategies" # maybe need to be finer.
     )
     
-    unique_Ns = sorted(df_summary['N'].unique())
+    unique_Ks = sorted(df_summary['K'].unique())
     unique_Strats = df_summary['Strategy_Set'].unique()
 
-    fig_dir = project_root / "analysis" / "figures" / "heatmaps_k_mu_by_n"
+    fig_dir = project_root / "analysis" / "figures" / "heatmaps_n_mu_by_k"
     fig_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving figures to {fig_dir} ...")
 
@@ -232,54 +249,49 @@ def plot_heatmaps(df_summary):
         else:
             valid_actions = [ACT_UNDERCUT, ACT_MATCH, ACT_ABOVE, ACT_UNDER_RESET] # 4 actions
 
-        for n in unique_Ns:
-            df_n = df_strat[df_strat['N'] == n]
-            if df_n.empty: continue
+        for k in unique_Ks:
+            df_k = df_strat[df_strat['K'] == k]
+            if df_k.empty: continue
             
             try:
-                pivot_delta = df_n.pivot(index="K", columns="mu", values="avg_delta").sort_index(ascending=False)
-                pivot_price = df_n.pivot(index="K", columns="mu", values="avg_price").sort_index(ascending=False)
-                pivot_std   = df_n.pivot(index="K", columns="mu", values="price_std").sort_index(ascending=False)
+                # Pivot by N instead of K
+                pivot_delta = df_k.pivot(index="N", columns="mu", values="avg_delta").sort_index(ascending=False)
+                pivot_price = df_k.pivot(index="N", columns="mu", values="avg_price").sort_index(ascending=False)
+                pivot_std   = df_k.pivot(index="N", columns="mu", values="price_std").sort_index(ascending=False)
                 
-                # 获取坐标轴刻度 (Sorted K for Y, Sorted Mu for X)
-                mu_values = sorted(df_n['mu'].unique())
-                k_values = sorted(df_n['K'].unique()) # Draw function handles reverse sort
+                # 获取坐标轴刻度 (Sorted N for Y, Sorted Mu for X)
+                mu_values = sorted(df_k['mu'].unique())
+                n_values = sorted(df_k['N'].unique())
                 
                 fig, axes = plt.subplots(2, 2, figsize=(22, 16))
-                fig.suptitle(f"N={n} Sellers | {strat_label}", fontsize=24, y=0.98)
+                fig.suptitle(f"K={k} Inner Periods Length | {strat_label}", fontsize=24, y=0.98)
                 
                 # 1. Delta
                 sns.heatmap(pivot_delta, annot=True, fmt=".2f", cmap="RdYlBu_r", ax=axes[0,0], vmin=0, vmax=1)
-                axes[0,0].set_title("Normalized Profit Index: $\\Delta$")
-                axes[0,0].set_xlabel("$\\mu$")
-                axes[0,0].set_ylabel("K")
+                axes[0,0].set_title("1. Collusion Index (Delta)")
                 
                 # 2. Avg Price
                 sns.heatmap(pivot_price, annot=True, fmt=".2f", cmap="viridis", ax=axes[0,1])
-                axes[0,1].set_title("Average Lowest Price")
-                axes[0,1].set_xlabel("$\\mu$")
-                axes[0,1].set_ylabel("K")
+                axes[0,1].set_title("2. Average Lowest Price")
 
-                # 3. Action Share
-                axes[1,0].set_title("Algorithmic Rule Share")
-                draw_fixed_order_action_heatmap(axes[1,0], df_n, mu_values, k_values, valid_actions)
+                # 3. Action Share (Split-Tile Plot)
+                axes[1,0].set_title("3. Action Share (Top 2 Actions)")
+                draw_split_action_heatmap(axes[1,0], df_k, mu_values, n_values, valid_actions)
 
                 # 4. Std
-                sns.heatmap(pivot_std, annot=True, fmt=".2f", cmap="magma", ax=axes[1,1])
-                axes[1,1].set_title("Price Instability (Std Dev)")
-                axes[1,1].set_xlabel("$\\mu$")
-                axes[1,1].set_ylabel("K")
+                sns.heatmap(pivot_std, annot=True, fmt=".3f", cmap="magma", ax=axes[1,1])
+                axes[1,1].set_title("4. Price Instability (Std Dev)")
                 
                 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
                 
                 safe_label = "4strats" if "4 Strategies" in strat_label else "3strats"
-                save_path = fig_dir / f"heatmap_shares_{safe_label}_N{n}.png"
+                save_path = fig_dir / f"heatmap_shares_{safe_label}_K{k}.png"
                 plt.savefig(save_path, dpi=150)
                 plt.close()
                 count += 1
                 
             except Exception as e:
-                print(f"Error plotting N={n}: {e}")
+                print(f"Error plotting K={k}: {e}")
                 import traceback
                 traceback.print_exc()
 

@@ -10,8 +10,8 @@ Design goals:
 
 Usage:
   cd pricing_marl
-  python fix_initial_qtables.py --results-root data/results
-  python fix_initial_qtables.py --results-root data/results --dry-run
+  python hpc/fix_initial_qtables.py --results-root data/results
+  python hpc/fix_initial_qtables.py --results-root data/results --dry-run
 """
 
 from __future__ import annotations
@@ -26,6 +26,12 @@ from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
+
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.agent import calculate_heuristic_init_values
 from src.config import Config

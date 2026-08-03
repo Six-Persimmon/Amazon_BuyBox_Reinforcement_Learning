@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Progress report for exp03 endogenous-K runs.
+Progress report for exp05 K=1 runs.
 
 Usage:
-  python exp03_progress_report.py --rounds 30
-  python exp03_progress_report.py --root /path/to/data/results_exp03 --rounds 30
+  python exp05_progress_report.py --rounds 100
+  python exp05_progress_report.py --root /path/to/data/results_exp05 --rounds 100
 """
 
 from __future__ import annotations
@@ -18,14 +18,14 @@ from typing import List, Optional, Sequence, Set, Tuple
 
 RUN_FILE_RE = re.compile(r"^run_(\d+)\.parquet$")
 QTABLE_FILE_RE = re.compile(r"^run_(\d+)_qtable\.parquet$")
-SCAN_DIR_RE = re.compile(r"^scan_kchoice_(3strats|4strats)_mu(.+)_K(.+)$")
+SCAN_DIR_RE = re.compile(r"^scan_k1_(3strats|4strats)_mu(.+)_k(.+)$")
 
 
 def _default_root() -> Path:
-    bigdata = Path("~/bigdata/pricing_marl/data/results_exp03").expanduser()
+    bigdata = Path("~/bigdata/pricing_marl/data/results_exp05").expanduser()
     if bigdata.exists():
         return bigdata
-    return Path(__file__).resolve().parent / "data" / "results_exp03"
+    return Path(__file__).resolve().parent.parent / "data" / "results_exp05"
 
 
 def _collect_run_ids(n_dir: Path) -> Tuple[Set[int], Set[int]]:
@@ -79,9 +79,7 @@ def _extract_list_values(tree: ast.AST, name: str) -> Optional[List]:
     return last_values
 
 
-def _infer_grid_values(
-    grid_file: Path,
-) -> Tuple[Optional[List[int]], Optional[List[float]], Optional[List[int]]]:
+def _infer_grid_values(grid_file: Path) -> Tuple[Optional[List[int]], Optional[List[float]], Optional[List[int]]]:
     if not grid_file.exists():
         return None, None, None
     try:
@@ -91,7 +89,7 @@ def _infer_grid_values(
 
     n_vals_raw = _extract_list_values(tree, "N_VALUES")
     mu_vals_raw = _extract_list_values(tree, "MU_VALUES")
-    k_vals_raw = _extract_list_values(tree, "K_CHOICES")
+    k_vals_raw = _extract_list_values(tree, "K_VALUES")
     if n_vals_raw is None or mu_vals_raw is None or k_vals_raw is None:
         return None, None, None
 
@@ -104,15 +102,16 @@ def _infer_grid_values(
     return n_vals, mu_vals, k_vals
 
 
-def _parse_scan_dir(scan_dir_name: str) -> Optional[Tuple[str, float, str]]:
+def _parse_scan_dir(scan_dir_name: str) -> Optional[Tuple[str, float, int]]:
     m = SCAN_DIR_RE.match(scan_dir_name)
     if not m:
         return None
     try:
         mu_val = float(m.group(2))
+        k_val = int(float(m.group(3)))
     except ValueError:
         return None
-    return m.group(1), mu_val, m.group(3)
+    return m.group(1), mu_val, k_val
 
 
 def _float_in(values: Sequence[float], x: float, tol: float = 1e-12) -> bool:
@@ -133,14 +132,10 @@ def _parse_float_csv(raw: Optional[str]) -> Optional[List[float]]:
     return vals or None
 
 
-def _k_label(k_values: Sequence[int]) -> str:
-    return "-".join(str(int(v)) for v in k_values)
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Report progress for exp03 endogenous-K runs.")
-    parser.add_argument("--root", type=str, default=None, help="Path to data/results_exp03")
-    parser.add_argument("--rounds", type=int, default=30, help="Runs per N/mu/set (default: 30)")
+    parser = argparse.ArgumentParser(description="Report progress for exp05 K=1 runs.")
+    parser.add_argument("--root", type=str, default=None, help="Path to data/results_exp05")
+    parser.add_argument("--rounds", type=int, default=100, help="Runs per N/mu/set")
     parser.add_argument("--recent", type=int, default=10, help="Show N most recent files")
     parser.add_argument(
         "--recent-kind",
@@ -153,11 +148,11 @@ def main() -> None:
         "--grid-file",
         type=str,
         default=None,
-        help="Path to exp03_k_choice_scan.py (to infer N/Mu/K choices)",
+        help="Path to exp05_k_1_scan.py (to infer N/Mu/K values)",
     )
     parser.add_argument("--n-values", type=str, default=None, help="Comma-separated N values")
     parser.add_argument("--mu-values", type=str, default=None, help="Comma-separated mu values")
-    parser.add_argument("--k-values", type=str, default=None, help="Comma-separated K choices")
+    parser.add_argument("--k-values", type=str, default=None, help="Comma-separated K values")
     parser.add_argument(
         "--experiment-set",
         type=str,
@@ -178,7 +173,7 @@ def main() -> None:
         return
 
     grid_file = Path(args.grid_file).expanduser() if args.grid_file else (
-        Path(__file__).resolve().parent / "experiments" / "exp03_k_choice_scan.py"
+        Path(__file__).resolve().parent.parent / "experiments" / "exp05_k_1_scan.py"
     )
     n_values, mu_values, k_values = _infer_grid_values(grid_file)
 
@@ -192,7 +187,6 @@ def main() -> None:
     if cli_k_values is not None:
         k_values = cli_k_values
 
-    expected_k_label = _k_label(k_values) if k_values else None
     labels = [args.experiment_set] if args.experiment_set else ["4strats", "3strats"]
 
     print(f"Results root: {root}")
@@ -202,8 +196,8 @@ def main() -> None:
         print(f"N values: {n_values}")
     if mu_values is not None:
         print(f"Mu values: {mu_values}")
-    if expected_k_label is not None:
-        print(f"K choices label: {expected_k_label}")
+    if k_values is not None:
+        print(f"K values: {k_values}")
     print("-" * 60)
 
     overall_eval = 0
@@ -212,21 +206,21 @@ def main() -> None:
     overall_expected = 0
 
     for label in labels:
-        scan_dirs_all = sorted(root.glob(f"scan_kchoice_{label}_*"))
+        scan_dirs_all = sorted(root.glob(f"scan_k1_{label}_*"))
         scan_dirs = scan_dirs_all
         ignored_scan_dirs = 0
         ignored_n_dirs = 0
 
-        if not args.include_extra_dirs and (mu_values is not None or expected_k_label is not None):
+        if not args.include_extra_dirs and (mu_values is not None or k_values is not None):
             filtered_scan_dirs = []
             for scan in scan_dirs_all:
                 parsed = _parse_scan_dir(scan.name)
                 if parsed is None:
                     ignored_scan_dirs += 1
                     continue
-                _, mu_val, k_label = parsed
+                _, mu_val, k_val = parsed
                 mu_ok = mu_values is None or _float_in(mu_values, mu_val)
-                k_ok = expected_k_label is None or k_label == expected_k_label
+                k_ok = k_values is None or k_val in k_values
                 if mu_ok and k_ok:
                     filtered_scan_dirs.append(scan)
                 else:
@@ -282,14 +276,15 @@ def main() -> None:
 
         missing_expected_dirs: List[Path] = []
         expected_by_grid = None
-        if n_values is not None and mu_values is not None and expected_k_label is not None:
-            expected_by_grid = len(n_values) * len(mu_values) * args.rounds
+        if n_values is not None and mu_values is not None and k_values is not None:
+            expected_by_grid = len(n_values) * len(mu_values) * len(k_values) * args.rounds
             for mu_val in mu_values:
-                scan = root / f"scan_kchoice_{label}_mu{mu_val}_K{expected_k_label}"
-                for n_val in n_values:
-                    n_dir = scan / f"N_{n_val}"
-                    if not n_dir.exists():
-                        missing_expected_dirs.append(n_dir)
+                for k_val in k_values:
+                    scan = root / f"scan_k1_{label}_mu{mu_val}_k{k_val}"
+                    for n_val in n_values:
+                        n_dir = scan / f"N_{n_val}"
+                        if not n_dir.exists():
+                            missing_expected_dirs.append(n_dir)
 
         expected_by_dirs = n_dirs * args.rounds
         expected = expected_by_grid or expected_by_dirs

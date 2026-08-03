@@ -25,7 +25,7 @@ def _default_root() -> Path:
     bigdata = Path("~/bigdata/pricing_marl/data/results_exp04").expanduser()
     if bigdata.exists():
         return bigdata
-    return Path(__file__).resolve().parent / "data" / "results_exp04"
+    return Path(__file__).resolve().parent.parent / "data" / "results_exp04"
 
 
 def _collect_run_ids(n_dir: Path) -> Tuple[Set[int], Set[int]]:
@@ -194,7 +194,7 @@ def main() -> None:
         return
 
     grid_file = Path(args.grid_file).expanduser() if args.grid_file else (
-        Path(__file__).resolve().parent / "experiments" / "exp04_fix_k_choice.py"
+        Path(__file__).resolve().parent.parent / "experiments" / "exp04_fix_k_choice.py"
     )
     n_values, mu_values, k_profiles = _infer_grid_values(grid_file)
 
