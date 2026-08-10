@@ -14,8 +14,12 @@ Everything in this folder is server-side tooling:
 | `exp03_k_choice_{scrc,turingvm}.sbatch` | exp03 endogenous-K scan |
 | `exp04_fix_k_choice_scrc.sbatch` | exp04 fixed heterogeneous-K |
 | `exp05_k_1_scan_scrc.sbatch` | exp05 K=1 scan |
+| `exp06_weighted_explore_scrc.sbatch` | exp06 weighted-exploration robustness → `data/results_exp06` |
+| `exp07_no_collapse_scrc.sbatch` | exp07 no-state-collapse robustness → `data/results_exp07` |
+| `exp08_async_poisson_scrc.sbatch` | exp08 async Poisson clocks → `data/results_exp08` |
+| `exp09_calvano_ladder_scrc.sbatch` | exp09 Calvano ladder / mechanism decomposition → `data/results_exp09` (§8) |
 | `progress_report.py` | progress monitor for exp02-style result trees |
-| `exp0{3,4,5}_progress_report.py` | progress monitors for exp03/04/05 |
+| `exp0{3,4,5,6,7,8,9}_progress_report.py` | progress monitors for exp03–exp09 |
 | `fix_initial_qtables.py` | one-off repair tool for old buggy `init` Q-snapshots (kept for reference) |
 
 ## 0. One-time migration to the new layout (as of 2026-08)
@@ -36,9 +40,9 @@ cd ~/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning
 rsync -av \
   --exclude '__pycache__' --exclude '.DS_Store' \
   --exclude 'data' --exclude 'analysis/figures' --exclude 'docs' \
-  pricing_marl/ sl9818@<cluster-login>:~/bigdata/pricing_marl/
+  pricing_marl/ sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/
 rsync -av pricing_marl/data/lookup_tables/ \
-  sl9818@<cluster-login>:~/bigdata/pricing_marl/data/lookup_tables/
+  sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/lookup_tables/
 ```
 
 Notes:
@@ -60,7 +64,7 @@ Notes:
 ```bash
 # project lives at ~/bigdata/pricing_marl (mirror of this folder)
 rsync -av --exclude data --exclude '__pycache__' \
-  pricing_marl/ sl9818@<cluster-login>:~/bigdata/pricing_marl/
+  pricing_marl/ sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/
 
 # create the conda env once
 module load anaconda3/py3.9
@@ -156,7 +160,7 @@ a shared filesystem won't recompute them; grid-floor-affected configs get a
 ## 5. Getting results back
 
 ```bash
-rsync -av sl9818@<cluster-login>:~/bigdata/pricing_marl/data/results_exp05/ \
+rsync -av sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_exp05/ \
   ~/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/results_exp05/
 ```
 
@@ -181,3 +185,71 @@ Then run the analysis scripts/notebooks locally (see the main
 4. Smoke test with tiny overrides (§2), check output schema locally, then
    launch the full run.
 5. Add the experiment and its figure/table mapping to the main README.
+
+## 7. Current round: exp06 / exp07 / exp08 (reviewer response, 2026-08)
+
+Full sequence, assuming the §0 migration is done:
+
+```bash
+# 1. login
+ssh sl9818@login.scrc.nyu.edu
+
+# 2. submit all three (independent jobs; each takes 32 CPUs on partition def)
+cd ~/bigdata/pricing_marl
+sbatch hpc/exp06_weighted_explore_scrc.sbatch
+sbatch hpc/exp07_no_collapse_scrc.sbatch
+sbatch hpc/exp08_async_poisson_scrc.sbatch
+
+# 3. monitor
+squeue -u sl9818
+python hpc/exp06_progress_report.py --rounds 30    # expected 600 paired (N=3 + N=10, 4strats)
+python hpc/exp07_progress_report.py --rounds 30    # expected 600 paired (300 per strategy set)
+python hpc/exp08_progress_report.py --rounds 30    # expected 600 paired (300 per strategy set)
+```
+
+Then download from the laptop:
+
+```bash
+for e in exp06 exp07 exp08; do
+  rsync -av sl9818@login.scrc.nyu.edu:~/bigdata/pricing_marl/data/results_$e/ \
+    ~/Documents/GitHub/Amazon_BuyBox_Reinforcement_Learning/pricing_marl/data/results_$e/
+done
+```
+
+and run the three `desc_exp0X_overview.ipynb` notebooks under
+`analysis/robust_exp0X_*/`. If a job dies, just resubmit the same sbatch —
+finished run IDs are skipped automatically.
+
+## 8. exp09 — Calvano ladder (mechanism decomposition, 2026-08)
+
+Five rungs (`cal_full`, `cal_smin`, `cal_arule`, `cal_both`, `cal_both_k30`)
+× 10 mu × 30 seeds = **1,500 runs**, ~25 min on 32 cores. Self-contained: it
+needs no lookup tables and does not read any other experiment's results.
+
+```bash
+cd ~/bigdata/pricing_marl
+sbatch hpc/exp09_calvano_ladder_scrc.sbatch
+
+# monitor (expected 1,500 paired: 300 per cell)
+python hpc/exp09_progress_report.py --rounds 30
+python hpc/exp09_progress_report.py --rounds 30 --cell cal_full   # one rung
+```
+
+Smoke test first, per §2:
+
+```bash
+PRICING_MARL_EXP09_RESULTS_DIR=$PWD/data/results_exp09_smoke \
+PRICING_MARL_EXP09_FILTER_MU=0.25 \
+PRICING_MARL_EXP09_ROUNDS_PER_CONFIG=1 \
+PRICING_MARL_EXP09_MAX_EPISODES=20000 \
+PRICING_MARL_EXP09_CONVERGE_PERIOD=2000 \
+PRICING_MARL_EXP09_EVAL_H=600 \
+sbatch hpc/exp09_calvano_ladder_scrc.sbatch
+```
+
+Engine validation (fast, no cluster needed): `python tests/test_exp09_engine.py`.
+
+The optional low-β arm (Extention_Plan.md §4.5) is the same job with
+`PRICING_MARL_EXP09_BETA=1e-6` and
+`PRICING_MARL_EXP09_RESULTS_DIR=$PWD/data/results_exp09_lowbeta`; it is **not**
+part of the scheduled round.

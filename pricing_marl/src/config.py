@@ -34,7 +34,11 @@ class Config:
     gamma: float = 0.95
     # T: int = 1_000_000
     max_episodes: int = 5_000_000
-    beta: Optional[float] = None 
+    beta: Optional[float] = None
+
+    # Exploration sampling distribution over active_strategies (same order).
+    # None = uniform (baseline behavior). Used by exp06 robustness check.
+    exploration_weights: Optional[List[float]] = None
     
     # Convergence Threshold. Number of consecutive periods with unchanged policy.
     converge_period: int = 10_000

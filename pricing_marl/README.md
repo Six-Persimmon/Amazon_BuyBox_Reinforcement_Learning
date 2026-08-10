@@ -85,6 +85,11 @@ pricing_marl/
 │   └── runner.py           #   Batch orchestration: parallel seeds → Parquet + config JSON
 ├── src_ext_K_action/       # Extended framework where actions are (rule, K) pairs
 │                           #   (used by exp03/exp04; same module layout as src/)
+├── src_atomic/             # Atomic-time engine: no lookup table, no state collapse
+│                           #   (used by exp07/exp08; sync_carryover + async_poisson modes)
+├── src_calvano/            # Calvano-ladder engine: state_mode x action_mode switches
+│                           #   (used by exp09; builds on src_atomic's environment)
+├── tests/                  # Engine validation scripts (test_exp09_engine.py)
 ├── experiments/            # Entry points (one per experiment, see §3)
 ├── analysis/               # Figure/table generation + notebooks (see §4)
 │   ├── figures/            #   Generated figures (by script; dated backups in figures/archive/)
@@ -92,6 +97,10 @@ pricing_marl/
 │   ├── robust_exp03_K_action/     # exp03 analysis notebooks + outputs
 │   ├── robust_exp04_fix_K_action/ # exp04 analysis notebook + paper figures
 │   ├── robust_exp05_k_1_scan/     # exp05 analysis notebook + figures
+│   ├── robust_exp06_weighted_explore/ # exp06 analysis notebook + figures
+│   ├── robust_exp07_no_collapse/  # exp07 demo + analysis notebooks + figures
+│   ├── robust_exp08_async_poisson/ # exp08 analysis notebook + figures
+│   ├── robust_exp09_calvano_ladder/ # exp09 decomposition notebook + figures/CSVs
 │   └── dev/                #   Debug / exploratory / one-off material (not in the paper)
 ├── hpc/                    # Slurm sbatch entry points, progress monitors, HPC_GUIDE.md
 ├── data/
@@ -101,6 +110,7 @@ pricing_marl/
 │   ├── results_exp03/      # exp03 endogenous-K results
 │   ├── results_exp04/      # exp04 fixed-heterogeneous-K results ← paper Figs 11/18/19
 │   ├── results_exp05/      # exp05 K=1 scan results
+│   ├── results_exp06..09/  # reviewer-response + decomposition runs (see Extention_Plan.md)
 │   └── archive/            # Dated backups of earlier runs (see §5)
 ├── docs/archive/           # Superseded docs (old changelog README, old HPC log)
 └── requirements.txt
@@ -165,6 +175,60 @@ seeds. Output: `data/results_exp04/`.
 re-chosen every period, i.e. no commitment). `N ∈ {2,3,5,7,10}`, all `mu`
 values, both strategy sets, 30 seeds. Output: `data/results_exp05/`.
 (Robustness / reviewer-response material, not in the current draft.)
+
+### exp06 — Weighted exploration (reviewer robustness)
+`experiments/exp06_weighted_explore.py` — baseline exp02 cells (`N ∈ {3,10}`,
+`K = 30`, `4strats`, 10 mu values, 30 seeds) with one change: the ε-draw uses
+weights (Undercut 1/6, Match 1/3, Above 1/3, Undercut+Reset 1/6) so the
+probability of drawing a price-falling rule equals the 3-rule case (1/3).
+Controls for the sampling-distribution confound in the 3-vs-4-rule
+comparison. Output: `data/results_exp06`. Analysis:
+`analysis/robust_exp06_weighted_explore/desc_exp06_overview.ipynb`.
+
+### exp07 — No state collapse (reviewer robustness)
+`experiments/exp07_no_collapse.py`, built on `src_atomic/` — baseline
+`N = 3, K = 30` cells, both rule sets, 10 mu values, 30 seeds, but the price
+vector carries over across episodes instead of collapsing to the market
+minimum (no lookup table; block dynamics validated to reproduce the lookup
+table exactly from collapsed starts). Output: `data/results_exp07`.
+Analysis: `analysis/robust_exp07_no_collapse/desc_exp07_overview.ipynb`, plus
+the no-learning micro-demonstration
+`analysis/robust_exp07_no_collapse/demo_collapse_vs_carryover.ipynb`.
+
+### exp08 — Asynchronous Poisson revision clocks (reviewer extension)
+`experiments/exp08_async_poisson.py`, also on `src_atomic/` — relaxes the
+synchronized-K assumption: each seller revises at its own stochastic times
+with gap ~ max(1, Poisson(λ_K = 30)), updating its Q-value with the average
+profit since its own last revision (γ per revision event, ε decaying in the
+agent's own revision count). `N = 3`, both rule sets, 10 mu values, 30 seeds.
+Convergence: greedy policies unchanged for 300k consecutive atomic periods;
+cap 60M. Output: `data/results_exp08` (eval parquet includes per-seller
+`rev_i` revision markers). Analysis:
+`analysis/robust_exp08_async_poisson/desc_exp08_overview.ipynb`.
+
+### exp09 — Calvano ladder / mechanism decomposition (**complete**)
+`experiments/exp09_calvano_ladder.py` on the `src_calvano/` engine — asks
+where the collusion gain actually comes from by walking a 5-rung ladder from a
+Calvano et al. (2020) style replication (`N = 3`, state = full price vector,
+actions = all 10 prices, no commitment) down to our full mechanism. The middle
+rungs switch on state reduction (state = market min) and action reduction
+(actions = the 3 repricer rules) one at a time, forming a 2×2; the fifth rung
+adds `K = 30` commitment. All cells: `N = 3`, 10 mu values, 30 seeds,
+carry-over prices, `β = 1e-5`, same grid and Δ normalization; all five rungs
+are produced by the same engine (exp09 does not reuse exp07 data). Note that
+the Calvano rung is a *style* replication, not a strict one — see the remark
+in Extention_Plan.md §4.5. Needs no lookup tables. Engine validation:
+`python tests/test_exp09_engine.py`. Output: `data/results_exp09/`.
+Analysis: `analysis/robust_exp09_calvano_ladder/desc_exp09_overview.ipynb`,
+which also emits the appendix figures and the summary/decomposition CSVs; the
+appendix text is drafted in the same folder as
+`exp09_appendix_draft_revised.tex`. Specification C3 was regenerated on
+2026-08-06 with seller-position-specific Q-initialization (Extention_Plan.md
+decision 12a); the superseded runs are in
+`data/archive/results_exp09_c3_pooled_init_2026_08_06/`.
+
+Design rationale and decisions for exp06–09:
+[Extention_Plan.md](Extention_Plan.md).
 
 ### exp01 — Early exploratory study
 `experiments/exp01_initial_study.py` — first-pass batch runs over a few
@@ -257,10 +321,11 @@ In short:
 - Slurm entry points: `hpc/heatmap.sbatch` / `hpc/heatmap_turingvm.sbatch`
   (exp02), `hpc/heatmap_k30_qtable_turingvm.sbatch` (K=30 qtable rerun),
   `hpc/exp03_k_choice_{scrc,turingvm}.sbatch`,
-  `hpc/exp04_fix_k_choice_scrc.sbatch`, `hpc/exp05_k_1_scan_scrc.sbatch`.
+  `hpc/exp04_fix_k_choice_scrc.sbatch`, `hpc/exp05_k_1_scan_scrc.sbatch`,
+  `hpc/exp0{6,7,8}_*_scrc.sbatch`, `hpc/exp09_calvano_ladder_scrc.sbatch`.
   Submit from the project root: `sbatch hpc/<file>.sbatch`.
 - Progress monitors: `hpc/progress_report.py` (exp02) and
-  `hpc/exp0{3,4,5}_progress_report.py`; they count paired
+  `hpc/exp0{3,4,5,6,7,8,9}_progress_report.py`; they count paired
   `run_<id>.parquet` + `run_<id>_qtable.parquet` files against the expected
   grid ("paired progress").
 - Parquet is compressed with `zstd`; lookup tables are file-locked so

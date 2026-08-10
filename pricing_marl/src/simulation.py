@@ -102,8 +102,13 @@ def run_simulation(
         # 1. Get Actions
         actions_indices = [agent.choose_action(state, t) for agent in agents]
         
-        # 2. Env Step (Fast Lookup) 
-        # TODO: 重要问题：simulation里的lookup table返回的值没有进行inv perm
+        # 2. Env Step (Fast Lookup)
+        # NOTE (verified 2026-08-03): env.step() un-permutes the canonical
+        # lookup profits back to the original agent order via inv_perm; the
+        # old TODO about a missing inv perm is stale. Checked empirically:
+        # permuting the action profile permutes profits identically, and the
+        # lookup path matches a direct original-order K-step simulation for
+        # all (state, profile) pairs.
         # return: rewards, next_state_idx, avg_p, avg_low_p
         rewards, next_state, _, _ = env.step(state, actions_indices, return_details=False)
         

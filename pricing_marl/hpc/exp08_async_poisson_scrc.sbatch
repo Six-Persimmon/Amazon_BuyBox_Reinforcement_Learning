@@ -1,0 +1,135 @@
+#!/bin/bash
+# Slurm batch script for exp08 on the current SCRC Slurm cluster.
+
+#SBATCH --job-name=exp08_async
+#SBATCH --output=exp08_async_%j.out
+#SBATCH --time=4-00:00:00
+#SBATCH --mem=32G
+#SBATCH --cpus-per-task=32
+#SBATCH --partition=def
+#SBATCH --export=ALL
+
+set -euo pipefail
+
+module purge
+module load anaconda3/py3.9
+
+PROJECT_DIR="${SLURM_SUBMIT_DIR:-$(pwd -P)}"
+# The sbatch scripts live in pricing_marl/hpc/; if the job was submitted from
+# inside hpc/, step up to the project root.
+if [ "$(basename "$PROJECT_DIR")" = "hpc" ]; then
+  PROJECT_DIR="$(dirname "$PROJECT_DIR")"
+fi
+echo "PROJECT_DIR=$PROJECT_DIR"
+cd "$PROJECT_DIR" || exit 1
+
+ENV_PY=""
+for candidate in \
+  "$HOME/.conda/envs/pricing_marl/bin/python" \
+  "$HOME/bigdata/pricing_marl/.conda/envs/pricing_marl/bin/python" \
+  "$PROJECT_DIR/.conda/envs/pricing_marl/bin/python" \
+  "/home/sl9818/.conda/envs/pricing_marl/bin/python" \
+  "/home/sl9818/bigdata/pricing_marl/.conda/envs/pricing_marl/bin/python" \
+  "/mnt/netapp_data/bighomes-active-netapp/sl9818/pricing_marl/.conda/envs/pricing_marl/bin/python"
+do
+  if [ -x "$candidate" ]; then
+    ENV_PY="$candidate"
+    break
+  fi
+done
+
+if [ -z "$ENV_PY" ]; then
+  echo "ERROR: no executable python was found for conda env 'pricing_marl'."
+  echo "Checked:"
+  echo "  $HOME/.conda/envs/pricing_marl/bin/python"
+  echo "  $HOME/bigdata/pricing_marl/.conda/envs/pricing_marl/bin/python"
+  echo "  $PROJECT_DIR/.conda/envs/pricing_marl/bin/python"
+  echo "  /home/sl9818/.conda/envs/pricing_marl/bin/python"
+  echo "  /home/sl9818/bigdata/pricing_marl/.conda/envs/pricing_marl/bin/python"
+  echo "  /mnt/netapp_data/bighomes-active-netapp/sl9818/pricing_marl/.conda/envs/pricing_marl/bin/python"
+  exit 1
+fi
+
+echo "ENV_PY=$ENV_PY"
+
+"$ENV_PY" - <<'PY'
+import sys
+import filelock
+import joblib
+import numpy
+import pandas
+import pyarrow
+import scipy
+import tqdm
+import zstandard
+
+print("PYTHON:", sys.executable)
+print("FILELOCK:", filelock.__version__)
+print("JOBLIB:", joblib.__version__)
+print("NUMPY:", numpy.__version__)
+print("PANDAS:", pandas.__version__)
+print("PYARROW:", pyarrow.__version__)
+print("SCIPY:", scipy.__version__)
+print("TQDM:", tqdm.__version__)
+print("ZSTANDARD:", zstandard.__version__)
+PY
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
+# Keep other experiment environment variables from affecting this run.
+unset PRICING_MARL_FILTER_N PRICING_MARL_FILTER_MU PRICING_MARL_FILTER_K
+unset PRICING_MARL_ROUNDS_PER_CONFIG PRICING_MARL_EXPERIMENT_SET PRICING_MARL_RESULTS_DIR
+unset PRICING_MARL_EXP03_FILTER_N PRICING_MARL_EXP03_FILTER_MU PRICING_MARL_EXP03_FILTER_K
+unset PRICING_MARL_EXP03_ROUNDS_PER_CONFIG PRICING_MARL_EXP03_EXPERIMENT_SET PRICING_MARL_EXP03_RESULTS_DIR
+unset PRICING_MARL_EXP04_FILTER_N PRICING_MARL_EXP04_FILTER_MU PRICING_MARL_EXP04_FILTER_K_PROFILE
+unset PRICING_MARL_EXP04_ROUNDS_PER_CONFIG PRICING_MARL_EXP04_EXPERIMENT_SET PRICING_MARL_EXP04_RESULTS_DIR
+
+# Exp08 defaults. Override before sbatch for smoke tests or targeted reruns.
+export PRICING_MARL_EXP08_N_JOBS="${PRICING_MARL_EXP08_N_JOBS:-${SLURM_CPUS_PER_TASK:-1}}"
+export PRICING_MARL_EXP08_RESULTS_DIR="${PRICING_MARL_EXP08_RESULTS_DIR:-$PROJECT_DIR/data/results_exp08}"
+export PRICING_MARL_EXP08_ROUNDS_PER_CONFIG="${PRICING_MARL_EXP08_ROUNDS_PER_CONFIG:-30}"
+export PRICING_MARL_EXP08_MAX_ATOMIC_PERIODS="${PRICING_MARL_EXP08_MAX_ATOMIC_PERIODS:-60000000}"
+export PRICING_MARL_EXP08_CONVERGE_ATOMIC_PERIODS="${PRICING_MARL_EXP08_CONVERGE_ATOMIC_PERIODS:-300000}"
+export PRICING_MARL_EXP08_GAP_DISTRIBUTION="${PRICING_MARL_EXP08_GAP_DISTRIBUTION:-poisson}"
+export PRICING_MARL_EXP08_EVAL_H="${PRICING_MARL_EXP08_EVAL_H:-10000}"
+
+: "${PRICING_MARL_EXP08_FILTER_N:=}"
+: "${PRICING_MARL_EXP08_FILTER_MU:=}"
+: "${PRICING_MARL_EXP08_EXPERIMENT_SET:=}"
+
+if [ -n "$PRICING_MARL_EXP08_FILTER_N" ]; then
+  export PRICING_MARL_EXP08_FILTER_N
+else
+  unset PRICING_MARL_EXP08_FILTER_N
+fi
+
+if [ -n "$PRICING_MARL_EXP08_FILTER_MU" ]; then
+  export PRICING_MARL_EXP08_FILTER_MU
+else
+  unset PRICING_MARL_EXP08_FILTER_MU
+fi
+
+if [ -n "$PRICING_MARL_EXP08_EXPERIMENT_SET" ]; then
+  export PRICING_MARL_EXP08_EXPERIMENT_SET
+else
+  unset PRICING_MARL_EXP08_EXPERIMENT_SET
+fi
+
+mkdir -p "$PRICING_MARL_EXP08_RESULTS_DIR"
+
+echo "EXP08 settings:"
+echo "  CONDA_ENV=pricing_marl"
+echo "  PRICING_MARL_EXP08_N_JOBS=$PRICING_MARL_EXP08_N_JOBS"
+echo "  PRICING_MARL_EXP08_RESULTS_DIR=$PRICING_MARL_EXP08_RESULTS_DIR"
+echo "  PRICING_MARL_EXP08_ROUNDS_PER_CONFIG=$PRICING_MARL_EXP08_ROUNDS_PER_CONFIG"
+echo "  PRICING_MARL_EXP08_MAX_ATOMIC_PERIODS=$PRICING_MARL_EXP08_MAX_ATOMIC_PERIODS"
+echo "  PRICING_MARL_EXP08_CONVERGE_ATOMIC_PERIODS=$PRICING_MARL_EXP08_CONVERGE_ATOMIC_PERIODS"
+echo "  PRICING_MARL_EXP08_GAP_DISTRIBUTION=$PRICING_MARL_EXP08_GAP_DISTRIBUTION"
+echo "  PRICING_MARL_EXP08_EVAL_H=$PRICING_MARL_EXP08_EVAL_H"
+echo "  PRICING_MARL_EXP08_FILTER_N=${PRICING_MARL_EXP08_FILTER_N:-<unset>}"
+echo "  PRICING_MARL_EXP08_FILTER_MU=${PRICING_MARL_EXP08_FILTER_MU:-<unset>}"
+echo "  PRICING_MARL_EXP08_EXPERIMENT_SET=${PRICING_MARL_EXP08_EXPERIMENT_SET:-<unset>}"
+
+"$ENV_PY" -u experiments/exp08_async_poisson.py

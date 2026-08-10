@@ -35,15 +35,30 @@ class QAgent:
     def __init__(self, agent_id, config: Config, initial_Q_table=None):
         self.id = agent_id
         self.cfg = config
-        
+
         # Q-Table: Shape [Num_Grids, Num_Actions]
         if initial_Q_table is not None:
             self.Q = np.copy(initial_Q_table)
         else:
             self.Q = np.zeros((config.num_grids, config.num_actions))
-                
+
+        # Exploration distribution: None = uniform (baseline)
+        weights = getattr(config, "exploration_weights", None)
+        if weights is None:
+            self.explore_probs = None
+        else:
+            probs = np.asarray(weights, dtype=float)
+            if probs.shape != (config.num_actions,):
+                raise ValueError(
+                    f"exploration_weights must have length {config.num_actions}, "
+                    f"got {probs.shape}"
+                )
+            if np.any(probs < 0) or not np.isclose(probs.sum(), 1.0):
+                raise ValueError("exploration_weights must be non-negative and sum to 1.")
+            self.explore_probs = probs / probs.sum()
+
         # Deviation hook
-        self.forced_action = None 
+        self.forced_action = None
 
     def choose_action(self, observation, t_step):
         """
@@ -58,6 +73,8 @@ class QAgent:
         
         # 3. Epsilon-Greedy
         if np.random.rand() < epsilon:
+            if self.explore_probs is not None:
+                return int(np.random.choice(self.cfg.num_actions, p=self.explore_probs))
             return np.random.randint(self.cfg.num_actions)
         else:
             # Greedy with random tie-breaking
